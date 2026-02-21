@@ -27,19 +27,22 @@ def test_proxy_score_schema_and_range() -> None:
     pred = gt.copy()
     score = compute_proxy_score(pred, gt, _base_config())
 
-    assert set(score.keys()) == {"total", "subscores", "flags"}
+    assert {"total_score", "sub_scores", "flags", "total", "subscores"}.issubset(set(score.keys()))
+    assert set(score["sub_scores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
     assert set(score["subscores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
-    assert set(score["flags"].keys()) == {"hardfail", "reasons"}
-    assert 0.0 <= score["total"] <= 1.0
+    assert set(score["flags"].keys()) == {"hard_fail", "hardfail", "reasons"}
+    assert 0.0 <= score["total_score"] <= 1.0
+    assert score["total_score"] == score["total"]
+    assert score["flags"]["hard_fail"] is False
     assert score["flags"]["hardfail"] is False
 
 
 def test_proxy_score_degrades_for_noisy_prediction() -> None:
     rng = np.random.default_rng(42)
     gt = np.ones((48, 48, 3), dtype=np.float32) * 0.5
-    clean = compute_proxy_score(gt.copy(), gt, _base_config())["total"]
+    clean = compute_proxy_score(gt.copy(), gt, _base_config())["total_score"]
     noisy_pred = np.clip(gt + rng.normal(0.0, 0.3, size=gt.shape), 0.0, 1.0).astype(np.float32)
-    noisy = compute_proxy_score(noisy_pred, gt, _base_config())["total"]
+    noisy = compute_proxy_score(noisy_pred, gt, _base_config())["total_score"]
 
     assert noisy < clean
 
@@ -50,6 +53,7 @@ def test_proxy_hardfail_on_invalid_values() -> None:
     pred[0, 0, 0] = np.nan
 
     score = compute_proxy_score(pred, gt, _base_config())
+    assert score["flags"]["hard_fail"] is True
     assert score["flags"]["hardfail"] is True
     assert "non_finite_values" in score["flags"]["reasons"]
 
@@ -137,13 +141,18 @@ def test_hardfail_fail_policy_behavior() -> None:
         cfg["aggregation"] = {"fail_policy": policy}
         out = compute_proxy_score(pred, gt, cfg)
 
-        assert set(out.keys()) == {"total", "subscores", "flags"}
+        assert {"total_score", "sub_scores", "flags", "total", "subscores"}.issubset(set(out.keys()))
+        assert out["flags"]["hard_fail"] is True
         assert out["flags"]["hardfail"] is True
         assert set(out["subscores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
+        assert set(out["sub_scores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
         assert all(np.isnan(v) for v in out["subscores"].values())
+        assert all(np.isnan(v) for v in out["sub_scores"].values())
         if np.isnan(expected_total):
+            assert np.isnan(out["total_score"])
             assert np.isnan(out["total"])
         else:
+            assert out["total_score"] == expected_total
             assert out["total"] == expected_total
 
 
@@ -162,8 +171,8 @@ def test_weighting_with_disabled_metric_is_renormalized() -> None:
     score_mae_only = compute_proxy_score(pred, gt, cfg_mae_only)
 
     # mae=0.5 -> mae_score=0.5 when it is the only enabled metric.
-    assert abs(score_mae_only["total"] - 0.5) < 1e-6
-    assert score_with_edge["total"] > score_mae_only["total"]
+    assert abs(score_mae_only["total_score"] - 0.5) < 1e-6
+    assert score_with_edge["total_score"] > score_mae_only["total_score"]
 
 
 def _write_png(path: Path, array: np.ndarray) -> None:
@@ -190,9 +199,9 @@ def test_validate_proxy_smoke(tmp_path: Path) -> None:
     _write_png(gt_root / "img_2.png", img2)
 
     split_csv.write_text(
-        "image_id,rel_target_path\\n"
-        "img_1,img_1.png\\n"
-        "img_2,img_2.png\\n",
+        "image_id,rel_target_path\n"
+        "img_1,img_1.png\n"
+        "img_2,img_2.png\n",
         encoding="utf-8",
     )
 
@@ -233,3 +242,49 @@ def test_validate_proxy_smoke(tmp_path: Path) -> None:
 
     summary = json.loads(summary_json.read_text(encoding="utf-8"))
     assert summary["count"] == 2
+
+
+def test_validate_proxy_resolves_target_path_relative_to_cwd(tmp_path: Path, monkeypatch) -> None:
+    from scripts.validate_proxy import main as validate_main
+
+    pred_dir = tmp_path / "pred"
+    out_dir = tmp_path / "reports"
+    split_dir = tmp_path / "splits"
+    split_csv = split_dir / "split.csv"
+    config_path = tmp_path / "config.json"
+    gt_dir = tmp_path / "gt"
+
+    img = np.ones((10, 12, 3), dtype=np.float32) * 0.4
+    _write_png(pred_dir / "img_1.png", img)
+    _write_png(gt_dir / "img_1.png", img)
+
+    split_dir.mkdir(parents=True, exist_ok=True)
+    split_csv.write_text(
+        "image_id,target_path\n"
+        "img_1,gt/img_1.png\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "image": {"allowed_ext": [".png"]},
+                "aggregation": {"fail_policy": "exclude", "allowed_fail_rate": 0.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    exit_code = validate_main(
+        [
+            "--pred_dir",
+            str(pred_dir),
+            "--split_csv",
+            str(split_csv),
+            "--config",
+            str(config_path),
+            "--out_dir",
+            str(out_dir),
+        ]
+    )
+    assert exit_code == 0

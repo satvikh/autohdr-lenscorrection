@@ -26,6 +26,28 @@ def test_train_config_loader_parses_proxy_fields() -> None:
     assert engine_cfg.param_saturation_warn_threshold > 0.0
     assert engine_cfg.residual_warn_abs_max_px > 0.0
     assert extra["warp_backend"] in {"person1", "mock"}
+    assert engine_cfg.best_metric_name == "total"
+    assert engine_cfg.best_metric_mode == "min"
+
+
+def test_train_config_loader_rejects_invalid_best_metric_mode(tmp_path) -> None:
+    p = tmp_path / "bad_best_metric.yaml"
+    p.write_text(
+        "\n".join(
+            [
+                "run_name: bad",
+                "stage: stage1_param_only",
+                "warp_backend: person1",
+                "best_metric_name: proxy_total_score",
+                "best_metric_mode: highest",
+                "optimizer: {lr: 0.0001, weight_decay: 0.0, betas: [0.9, 0.999]}",
+                "scheduler: {name: none}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="best_metric_mode"):
+        _ = load_train_config(p)
 
 
 def test_train_config_loader_rejects_invalid_stage(tmp_path) -> None:

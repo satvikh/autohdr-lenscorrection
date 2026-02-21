@@ -42,6 +42,8 @@ class EngineConfig:
     fail_on_nonfinite_loss: bool = True
     param_saturation_warn_threshold: float = 0.50
     residual_warn_abs_max_px: float = 20.0
+    best_metric_name: str = "total"
+    best_metric_mode: str = "min"  # "min" or "max"
 
 
 class TrainerEngine:
@@ -89,6 +91,10 @@ class TrainerEngine:
 
         self._debug_dump_written = 0
         self._warned_once: set[str] = set()
+        mode = str(self.config.best_metric_mode).strip().lower()
+        if mode not in {"min", "max"}:
+            raise ValueError(f"best_metric_mode must be 'min' or 'max', got: {self.config.best_metric_mode}")
+        self._best_metric_mode = mode
 
     @staticmethod
     def _resolve_device(requested: str) -> torch.device:
@@ -218,6 +224,24 @@ class TrainerEngine:
         )
         self._debug_dump_written += 1
 
+    def _resolve_best_metric_from_val(self, val_metrics: dict[str, float]) -> float:
+        key = str(self.config.best_metric_name).strip()
+        candidate = float(val_metrics.get(key, float("nan")))
+        if torch.isfinite(torch.tensor(candidate)):
+            return candidate
+        # Backward-compatible fallback keeps historical behavior.
+        fallback = float(val_metrics.get("total", float("nan")))
+        return fallback
+
+    def _is_better_metric(self, candidate: float) -> bool:
+        if not torch.isfinite(torch.tensor(candidate)):
+            return False
+        if self.best_val_loss is None:
+            return True
+        if self._best_metric_mode == "min":
+            return candidate < self.best_val_loss
+        return candidate > self.best_val_loss
+
     def train_one_epoch(self, train_loader: Iterable[dict[str, Any]], epoch: int) -> dict[str, float]:
         tracker = RunningAverage()
 
@@ -343,10 +367,10 @@ class TrainerEngine:
 
                 if val_loader is not None:
                     final_val = self.validate(val_loader, epoch)
-                    val_total = final_val.get("total", float("inf"))
+                    selected_metric = self._resolve_best_metric_from_val(final_val)
 
-                    if self.best_val_loss is None or val_total < self.best_val_loss:
-                        self.best_val_loss = val_total
+                    if self._is_better_metric(selected_metric):
+                        self.best_val_loss = selected_metric
                         save_checkpoint(
                             ckpt_dir / "best.pt",
                             model=self.model,
@@ -355,10 +379,12 @@ class TrainerEngine:
                             scaler=self.scaler,
                             epoch=epoch,
                             global_step=self.global_step,
-                            best_metric=val_total,
+                            best_metric=selected_metric,
                             extra={
                                 "stage": self.stage.name,
                                 "proxy_enabled": self.proxy_scorer is not None,
+                                "best_metric_name": self.config.best_metric_name,
+                                "best_metric_mode": self._best_metric_mode,
                                 "proxy_total_score": final_val.get("proxy_total_score"),
                             },
                         )
@@ -375,6 +401,8 @@ class TrainerEngine:
                     extra={
                         "stage": self.stage.name,
                         "proxy_enabled": self.proxy_scorer is not None,
+                        "best_metric_name": self.config.best_metric_name,
+                        "best_metric_mode": self._best_metric_mode,
                         "proxy_total_score": final_val.get("proxy_total_score") if final_val else None,
                     },
                 )
@@ -392,6 +420,8 @@ class TrainerEngine:
                     "stage": self.stage.name,
                     "interrupted": True,
                     "proxy_enabled": self.proxy_scorer is not None,
+                    "best_metric_name": self.config.best_metric_name,
+                    "best_metric_mode": self._best_metric_mode,
                 },
             )
             print(f"[warn] Training interrupted. Saved checkpoint: {ckpt_dir / 'interrupted.pt'}")
@@ -401,5 +431,8 @@ class TrainerEngine:
             "train_total": final_train.get("total", float("nan")),
             "val_total": final_val.get("total", float("nan")) if final_val else float("nan"),
             "best_val_total": float(self.best_val_loss) if self.best_val_loss is not None else float("nan"),
+            "best_metric_name": str(self.config.best_metric_name),
+            "best_metric_mode": self._best_metric_mode,
+            "best_metric_value": float(self.best_val_loss) if self.best_val_loss is not None else float("nan"),
             "val_proxy_total": final_val.get("proxy_total_score", float("nan")) if final_val else float("nan"),
         }

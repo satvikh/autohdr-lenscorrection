@@ -1,0 +1,12 @@
+{
+  "total_pairs": 256,
+  "train_pairs": 225,
+  "val_pairs": 31,
+  "val_frac": 0.1,
+  "seed": 123,
+  "max_pairs": 256,
+  "root_dir": "automatic-lens-correction\\lens-correction-train-cleaned",
+  "metadata_path": "automatic-lens-correction\\lens-correction-train-cleaned\\training_metadata.json",
+  "train_csv": "data\\splits\\real_pairs_audit\\train_split.csv",
+  "val_csv": "data\\splits\\real_pairs_audit\\val_split.csv"
+}

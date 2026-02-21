@@ -62,6 +62,7 @@ def _residual_summary_norm(residual_flow_norm_bhwc: Tensor | None) -> dict[str, 
             "residual_dy_abs_mean_norm": 0.0,
             "residual_dx_abs_max_norm": 0.0,
             "residual_dy_abs_max_norm": 0.0,
+            "residual_magnitude": 0.0,
         }
 
     if residual_flow_norm_bhwc.ndim != 4 or residual_flow_norm_bhwc.shape[-1] != 2:
@@ -69,12 +70,14 @@ def _residual_summary_norm(residual_flow_norm_bhwc: Tensor | None) -> dict[str, 
 
     dx_abs = residual_flow_norm_bhwc[..., 0].abs()
     dy_abs = residual_flow_norm_bhwc[..., 1].abs()
+    mag = torch.sqrt((dx_abs * dx_abs) + (dy_abs * dy_abs))
 
     return {
         "residual_dx_abs_mean_norm": float(dx_abs.mean().item()),
         "residual_dy_abs_mean_norm": float(dy_abs.mean().item()),
         "residual_dx_abs_max_norm": float(dx_abs.max().item()),
         "residual_dy_abs_max_norm": float(dy_abs.max().item()),
+        "residual_magnitude": float(mag.max().item()),
     }
 
 
@@ -99,10 +102,17 @@ def evaluate_safety(
     jac = jacobian_stats(grid)
     residual_metrics = _residual_summary_norm(residual_flow_norm_bhwc)
 
+    negative_det_pct = float(jac["negative_det_pct"])
     metrics = {
+        # Legacy keys used by current tooling/tests.
         "out_of_bounds_ratio": oob_ratio,
         "invalid_border_ratio": border_ratio,
-        "negative_det_pct": float(jac["negative_det_pct"]),
+        "negative_det_pct": negative_det_pct,
+        # Contract aliases.
+        "oob_ratio": oob_ratio,
+        "border_invalid_ratio": border_ratio,
+        "jacobian_negative_det_pct": negative_det_pct,
+        # Shared Jacobian diagnostics.
         "det_min": float(jac["det_min"]),
         "det_p01": float(jac["det_p01"]),
         "det_mean": float(jac["det_mean"]),

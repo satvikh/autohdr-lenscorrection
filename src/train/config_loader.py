@@ -143,6 +143,13 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         valid = ", ".join(sorted(VALID_WARP_BACKENDS))
         raise ValueError(f"train.warp_backend must be one of [{valid}], got '{warp_backend}'")
 
+    best_metric_name = str(raw.get("best_metric_name", "total"))
+    best_metric_mode = str(raw.get("best_metric_mode", "min")).strip().lower()
+    if best_metric_name.strip() == "":
+        raise ValueError("train.best_metric_name must be a non-empty string")
+    if best_metric_mode not in {"min", "max"}:
+        raise ValueError(f"train.best_metric_mode must be 'min' or 'max', got '{best_metric_mode}'")
+
     engine = EngineConfig(
         epochs=int(raw.get("epochs", 1)),
         amp_enabled=bool(raw.get("amp_enabled", False)),
@@ -161,6 +168,8 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         fail_on_nonfinite_loss=bool(raw.get("fail_on_nonfinite_loss", True)),
         param_saturation_warn_threshold=float(raw.get("param_saturation_warn_threshold", 0.50)),
         residual_warn_abs_max_px=float(raw.get("residual_warn_abs_max_px", 20.0)),
+        best_metric_name=best_metric_name,
+        best_metric_mode=best_metric_mode,
     )
     if engine.epochs < 1:
         raise ValueError(f"train.epochs must be >= 1, got {engine.epochs}")

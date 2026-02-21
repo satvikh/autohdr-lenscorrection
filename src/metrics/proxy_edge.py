@@ -58,8 +58,12 @@ def compute_edge_score(pred, gt, config) -> float:
         return _safe_float(score)
 
     # Default: cosine similarity over normalized edge maps.
-    denom = float(np.linalg.norm(pred_flat) * np.linalg.norm(gt_flat))
+    pred_norm = float(np.linalg.norm(pred_flat))
+    gt_norm = float(np.linalg.norm(gt_flat))
+    denom = pred_norm * gt_norm
     if denom <= eps:
-        return 1.0
+        if pred_norm <= eps and gt_norm <= eps:
+            return 1.0
+        return 0.0
     score = float(np.dot(pred_flat, gt_flat) / denom)
     return _safe_float(score)

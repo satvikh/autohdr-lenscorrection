@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from src.metrics.proxy_score import compute_proxy_score
 from src.train.proxy_hooks import compute_proxy_metrics_for_batch, resolve_proxy_scorer
 
 
@@ -43,3 +44,14 @@ def test_proxy_metrics_per_sample_fallback() -> None:
     out = compute_proxy_metrics_for_batch(scorer=scorer, pred_batch=pred, target_batch=gt, config=None)
     assert "proxy_total_score" in out
     assert "proxy_edge" in out
+
+
+def test_proxy_metrics_with_builtin_scorer_handles_batched_tensors() -> None:
+    pred = torch.rand(2, 3, 16, 16)
+    gt = pred.clone()
+
+    out = compute_proxy_metrics_for_batch(scorer=compute_proxy_score, pred_batch=pred, target_batch=gt, config={})
+
+    assert "proxy_total_score" in out
+    assert out["proxy_total_score"] > 0.9
+    assert out.get("proxy_hard_fail", 1.0) == 0.0

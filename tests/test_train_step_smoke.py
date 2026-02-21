@@ -196,6 +196,37 @@ def test_stage1_disables_residual_path() -> None:
     assert backend.last_residual_is_none is True
 
 
+def test_stage2_enables_residual_path() -> None:
+    class SpyBackend(MockWarpBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_residual_is_none: bool | None = None
+
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            self.last_residual_is_none = residual_flow_lowres is None
+            return super().warp(image, params, residual_flow_lowres)
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage2_hybrid"))
+    stage = get_stage_toggles("stage2_hybrid")
+    backend = SpyBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    _ = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=backend,
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=False,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+    )
+    assert backend.last_residual_is_none is False
+
+
 def test_person1_geometry_backend_smoke() -> None:
     device = torch.device("cpu")
     model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny")).to(device)

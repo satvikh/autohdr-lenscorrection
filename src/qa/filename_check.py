@@ -6,6 +6,8 @@ from pathlib import Path
 
 from src.qa._utils import _allowed_ext, _normalize_required_ids
 
+_KNOWN_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+
 
 def check_filenames(pred_dir, required_ids, config) -> dict:
     """Validate filename coverage against required ids and allowed extensions."""
@@ -16,6 +18,7 @@ def check_filenames(pred_dir, required_ids, config) -> dict:
     cfg = config or {}
     qa_cfg = cfg.get("qa", {}) if isinstance(cfg, dict) else {}
     allow_extra_files = bool(qa_cfg.get("allow_extra_files", False))
+    ignore_non_image_aux_files = bool(qa_cfg.get("ignore_non_image_aux_files", True))
 
     files = [p for p in sorted(pred_path.iterdir()) if p.is_file()]
 
@@ -28,6 +31,9 @@ def check_filenames(pred_dir, required_ids, config) -> dict:
         ext = file.suffix.lower()
         filename = file.name
         if ext not in allowed_ext:
+            if ignore_non_image_aux_files and stem not in required_set and ext not in _KNOWN_IMAGE_EXT:
+                # Ignore sidecar artifacts (for example run metadata JSON files).
+                continue
             bad_names.append(filename)
             continue
         if stem not in required_set:

@@ -53,20 +53,39 @@ def _hardfail_total(config) -> float:
     return float("nan")
 
 
+def _make_report(*, total: float, subscores: dict[str, float], hard_fail: bool, reasons: list[str]) -> dict:
+    flags = {"hard_fail": bool(hard_fail), "hardfail": bool(hard_fail), "reasons": reasons}
+    # Keep both contract and legacy keys to avoid breaking existing consumers.
+    return {
+        "total_score": float(total),
+        "total": float(total),
+        "sub_scores": subscores,
+        "subscores": subscores,
+        "flags": flags,
+    }
+
+
 def compute_proxy_score(pred, gt, config) -> dict:
     """Compute total proxy score and per-component diagnostics.
 
     Returns:
-        {"total": float, "subscores": dict[str, float], "flags": {"hardfail": bool, "reasons": list[str]}}
+        {
+            "total_score": float,  # contract
+            "sub_scores": dict[str, float],  # contract
+            "flags": {"hard_fail": bool, "reasons": list[str]},  # contract
+            "total": float,  # legacy alias
+            "subscores": dict[str, float],  # legacy alias
+        }
     """
     cfg = config or {}
     hardfail, reasons = run_hardfail_checks(pred, gt, cfg)
     if hardfail:
-        return {
-            "total": _hardfail_total(cfg),
-            "subscores": {k: float("nan") for k in _METRIC_KEYS},
-            "flags": {"hardfail": True, "reasons": reasons},
-        }
+        return _make_report(
+            total=_hardfail_total(cfg),
+            subscores={k: float("nan") for k in _METRIC_KEYS},
+            hard_fail=True,
+            reasons=reasons,
+        )
 
     metric_fns = _metric_functions()
     enabled = _enabled_metrics(cfg)
@@ -94,11 +113,13 @@ def compute_proxy_score(pred, gt, config) -> dict:
             w_enabled = {k: v / w_sum for k, v in w_enabled.items()}
         total = float(sum(w_enabled[k] * subscores[k] for k in enabled_keys))
 
-    return {
-        "total": float(np.clip(total, 0.0, 1.0)) if np.isfinite(total) else float(total),
-        "subscores": subscores,
-        "flags": {"hardfail": False, "reasons": reasons},
-    }
+    clipped_total = float(np.clip(total, 0.0, 1.0)) if np.isfinite(total) else float(total)
+    return _make_report(
+        total=clipped_total,
+        subscores=subscores,
+        hard_fail=False,
+        reasons=reasons,
+    )
 
 
 def aggregate_scores(rows: List[dict], config) -> dict:
@@ -118,8 +139,13 @@ def aggregate_scores(rows: List[dict], config) -> dict:
     acfg = cfg.get("aggregation", {}) if isinstance(cfg, dict) else {}
     fail_policy = str(acfg.get("fail_policy", "exclude"))
 
-    totals = np.array([float(r.get("total", float("nan"))) for r in rows], dtype=np.float64)
-    fail_count = int(sum(bool(r.get("flags", {}).get("hardfail", False)) for r in rows))
+    totals = np.array([float(r.get("total_score", r.get("total", float("nan")))) for r in rows], dtype=np.float64)
+    fail_count = int(
+        sum(
+            bool(r.get("flags", {}).get("hard_fail", r.get("flags", {}).get("hardfail", False)))
+            for r in rows
+        )
+    )
     if fail_policy == "exclude":
         finite_totals = totals[np.isfinite(totals)]
     else:
@@ -128,7 +154,10 @@ def aggregate_scores(rows: List[dict], config) -> dict:
 
     means = {}
     for k in _METRIC_KEYS:
-        vals = np.array([float(r.get("subscores", {}).get(k, float("nan"))) for r in rows], dtype=np.float64)
+        vals = np.array(
+            [float(r.get("sub_scores", r.get("subscores", {})).get(k, float("nan"))) for r in rows],
+            dtype=np.float64,
+        )
         vals = vals[np.isfinite(vals)]
         means[k] = float(np.mean(vals)) if vals.size else float("nan")
 

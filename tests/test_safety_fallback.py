@@ -30,6 +30,8 @@ def test_unsafe_grid_reports_not_safe_and_reasons():
     assert len(report["reasons"]) > 0
     assert report["metrics"]["out_of_bounds_ratio"] > 0.0
     assert report["metrics"]["negative_det_pct"] > 0.0
+    assert report["metrics"]["oob_ratio"] == report["metrics"]["out_of_bounds_ratio"]
+    assert report["metrics"]["jacobian_negative_det_pct"] == report["metrics"]["negative_det_pct"]
 
 
 def test_fallback_order_and_hard_unsafe_warning():
@@ -75,13 +77,26 @@ def test_invalid_border_ratio_is_computed_from_grid_when_not_provided():
     report = evaluate_safety(grid, config=cfg)
 
     assert report["metrics"]["invalid_border_ratio"] > 0.0
+    assert report["metrics"]["border_invalid_ratio"] == report["metrics"]["invalid_border_ratio"]
     assert "INVALID_BORDER_RATIO_EXCEEDED" in report["reasons"]
+
+
+def test_residual_magnitude_metric_present():
+    grid = make_identity_grid(batch=1, height=9, width=9, dtype=torch.float32)
+    residual = torch.zeros((1, 9, 9, 2), dtype=torch.float32)
+    residual[..., 0] = 0.10
+    residual[..., 1] = 0.20
+
+    report = evaluate_safety(grid, residual_flow_norm_bhwc=residual, config=SafetyConfig())
+
+    assert report["metrics"]["residual_magnitude"] > 0.0
 
 
 def _run_all():
     test_unsafe_grid_reports_not_safe_and_reasons()
     test_fallback_order_and_hard_unsafe_warning()
     test_invalid_border_ratio_is_computed_from_grid_when_not_provided()
+    test_residual_magnitude_metric_present()
 
 
 if __name__ == "__main__":
