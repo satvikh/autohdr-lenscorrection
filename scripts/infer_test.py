@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -31,7 +32,7 @@ def _collect_images(input_dir: Path) -> list[Path]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Param-only baseline inference over a directory of images.")
+    parser = argparse.ArgumentParser(description="Inference over a directory of images.")
     parser.add_argument("input_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     args = parser.parse_args()
@@ -55,6 +56,19 @@ def main() -> None:
         return
 
     processed = 0
+    mode_counts: Counter[str] = Counter()
+    unsafe_trigger_count = 0
+    fallback_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+
+    residual_metric_sums = {
+        "residual_dx_abs_mean_norm": 0.0,
+        "residual_dy_abs_mean_norm": 0.0,
+        "residual_dx_abs_max_norm": 0.0,
+        "residual_dy_abs_max_norm": 0.0,
+    }
+    residual_metric_count = 0
+
     for image_path in images:
         output_tensor, metadata = predictor.predict(image_path)
         out_path = output_dir / f"{image_path.stem}.jpg"
@@ -63,11 +77,46 @@ def main() -> None:
         save_jpeg(output_tensor, out_path, expected_hw=(h, w))
 
         processed += 1
-        print(f"[{processed}/{total}] {image_path.name} -> {out_path.name} mode={metadata['mode_used']}")
+        mode = str(metadata.get("mode_used", "unknown"))
+        mode_counts[mode] += 1
+
+        initial_safety = metadata.get("initial_safety", {})
+        initial_safe = bool(initial_safety.get("safe", True))
+        if not initial_safe:
+            unsafe_trigger_count += 1
+            for reason in initial_safety.get("reasons", []):
+                reason_counts[str(reason)] += 1
+
+        if not initial_safe:
+            fallback_counts[mode] += 1
+
+        initial_metrics = initial_safety.get("metrics", {})
+        if all(k in initial_metrics for k in residual_metric_sums):
+            has_residual_signal = any(abs(float(initial_metrics[k])) > 0.0 for k in residual_metric_sums)
+            if has_residual_signal:
+                residual_metric_count += 1
+                for k in residual_metric_sums:
+                    residual_metric_sums[k] += float(initial_metrics[k])
+
+        final_safe = bool(metadata.get("safety", {}).get("safe", False))
+        print(
+            f"[{processed}/{total}] {image_path.name} -> {out_path.name} "
+            f"mode={mode} initial_safe={initial_safe} final_safe={final_safe}"
+        )
 
     print("Summary")
     print(f"- processed: {processed}")
-    print("- mode_used_counts: {'param_only': %d}" % processed)
+    print(f"- mode_used_counts: {dict(mode_counts)}")
+    print(f"- unsafe_triggers: {unsafe_trigger_count}")
+    print(f"- fallback_counts: {dict(fallback_counts)}")
+    print("- safety_reasons_top:")
+    for reason, count in reason_counts.most_common(5):
+        print(f"  - {reason}: {count}")
+
+    if residual_metric_count > 0:
+        print("- residual_metrics_avg:")
+        for key, total_val in residual_metric_sums.items():
+            print(f"  - {key}: {total_val / residual_metric_count:.6f}")
 
 
 if __name__ == "__main__":
