@@ -12,7 +12,7 @@ from torch import Tensor
 from src.geometry.jacobian import jacobian_stats
 from src.geometry.parametric_warp import build_parametric_grid
 from src.geometry.warp_ops import warp_image
-from src.inference.fallback import run_fallback_hierarchy
+from src.inference.fallback import make_conservative_param_only
 from src.inference.safety import SafetyConfig, evaluate_safety
 
 
@@ -31,7 +31,7 @@ class PredictorConfig:
 
 
 class Predictor:
-    """Full-resolution param-only baseline with safety and fallback utilities."""
+    """Full-resolution param-only baseline with safety and conservative fallback."""
 
     def __init__(self, model: ModelCallable, config: PredictorConfig | None = None):
         self.model = model
@@ -85,38 +85,34 @@ class Predictor:
             raise ValueError("model output 'params' must be a torch.Tensor")
 
         params = params.to(device=image.device, dtype=image.dtype)
-        batch, _, _, _ = image.shape
+        batch = image.shape[0]
         if params.ndim != 2 or params.shape[0] != batch or params.shape[1] < 8:
             raise ValueError("params must have shape [B, 8+] and batch must match input image")
 
         safety_cfg = self.config.safety_config or SafetyConfig()
 
-        base_grid = self._grid_from_params(params, image)
-        base_jac = jacobian_stats(base_grid)
-        base_safety = evaluate_safety(base_grid, residual_flow_norm_bhwc=None, config=safety_cfg)
+        candidate_grid = self._grid_from_params(params, image)
+        candidate_jac = jacobian_stats(candidate_grid)
+        candidate_safety = evaluate_safety(candidate_grid, residual_flow_norm_bhwc=None, config=safety_cfg)
 
         mode_used = "param_only"
-        chosen_params = params
         warnings: list[str] = []
-        final_safety = base_safety
+        chosen_params = params
+        final_grid = candidate_grid
+        final_jac = candidate_jac
+        final_safety = candidate_safety
 
-        if not base_safety["safe"]:
-            def _safety_evaluator(candidate_params: Tensor, mode: str) -> dict[str, Any]:
-                candidate_grid = self._grid_from_params(candidate_params, image)
-                return evaluate_safety(candidate_grid, residual_flow_norm_bhwc=None, config=safety_cfg)
+        if not candidate_safety["safe"]:
+            warnings.append("PARAM_ONLY_UNSAFE_FALLBACK_TO_CONSERVATIVE")
+            mode_used = "param_only_conservative"
+            chosen_params = make_conservative_param_only(params)
 
-            mode_used, chosen_params, warnings, final_safety = run_fallback_hierarchy(
-                hybrid_params=params,
-                param_only_params=params,
-                safety_evaluator=_safety_evaluator,
-            )
+            final_grid = self._grid_from_params(chosen_params, image)
+            final_jac = jacobian_stats(final_grid)
+            final_safety = evaluate_safety(final_grid, residual_flow_norm_bhwc=None, config=safety_cfg)
 
-            # Baseline predictor does not apply residual path yet.
-            if mode_used == "hybrid":
-                mode_used = "param_only"
-
-        final_grid = self._grid_from_params(chosen_params, image)
-        final_jac = jacobian_stats(final_grid)
+            if not final_safety["safe"]:
+                warnings.append("HARD_UNSAFE_OUTPUT")
 
         # Single-pass full-resolution warp.
         warped = warp_image(
@@ -138,8 +134,8 @@ class Predictor:
             "min": float(warped.min().item()),
             "max": float(warped.max().item()),
             "mean": float(warped.mean().item()),
-            "initial_safety": base_safety,
-            "initial_jacobian": base_jac,
+            "initial_safety": candidate_safety,
+            "initial_jacobian": candidate_jac,
         }
 
         return warped, metadata
