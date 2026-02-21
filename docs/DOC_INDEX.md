@@ -32,6 +32,9 @@ Entry point for all project docs.
 - `docs/satvik(person1)/person1_specdoc.md`
 - `docs/satvik(person1)/concurrency_plan_person1.md`
 - `docs/satvik(person1)/execution_checklist_person1.md`
+- `docs/satvik(person1)/person3b_specdoc.md`
+- `docs/satvik(person1)/person3b_contract.md`
+- `docs/satvik(person1)/person3b_execution_checklist.md`
 
 ## Person 2 Docs (Kush)
 - `docs/kush(person2)/README.md`
