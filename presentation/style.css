@@ -1,0 +1,278 @@
+/* ============================================================
+   Shared styles for the presentation selector (index.html)
+   Each deck (deck1–3) is fully self-contained.
+   ============================================================ */
+
+:root {
+  --idx-bg: #0A0A10;
+  --idx-card1-accent: #00E5FF;
+  --idx-card2-accent: #4ECDC4;
+  --idx-card3-accent: #C0392B;
+  --idx-text: #F0F0F4;
+  --idx-muted: #666680;
+  --idx-border: rgba(255,255,255,.08);
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  min-height: 100%;
+  background: var(--idx-bg);
+  color: var(--idx-text);
+  font-family: Georgia, "Times New Roman", serif;
+  overflow-x: hidden;
+}
+
+/* ---- Hero ---- */
+.hero {
+  text-align: center;
+  padding: 80px 24px 48px;
+}
+
+.hero-label {
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  letter-spacing: .3em;
+  text-transform: uppercase;
+  color: var(--idx-muted);
+  margin-bottom: 20px;
+}
+
+.hero-title {
+  font-size: clamp(2.4rem, 6vw, 5rem);
+  font-weight: 400;
+  letter-spacing: -.03em;
+  line-height: 1.08;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #fff 0%, rgba(0,229,255,.8) 40%, rgba(255,149,0,.7) 80%, #fff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero-sub {
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: .15em;
+  color: var(--idx-muted);
+  margin-bottom: 56px;
+}
+
+/* ---- Cards grid ---- */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 32px 80px;
+}
+
+.card {
+  position: relative;
+  border: 1px solid var(--idx-border);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  transition: transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s ease, border-color .3s ease;
+}
+
+.card:hover {
+  transform: translateY(-6px);
+}
+
+/* Card 1: VOID */
+.card-void {
+  background: #000008;
+  border-color: rgba(0,229,255,.15);
+}
+.card-void:hover {
+  border-color: rgba(0,229,255,.5);
+  box-shadow: 0 16px 48px rgba(0,229,255,.12);
+}
+
+/* Card 2: SCHEMATIC */
+.card-schema {
+  background: #060F1A;
+  border-color: rgba(78,205,196,.15);
+}
+.card-schema:hover {
+  border-color: rgba(78,205,196,.5);
+  box-shadow: 0 16px 48px rgba(78,205,196,.1);
+}
+
+/* Card 3: LUMINARY */
+.card-luminary {
+  background: #FAF6EE;
+  border-color: rgba(192,57,43,.15);
+}
+.card-luminary:hover {
+  border-color: rgba(192,57,43,.4);
+  box-shadow: 0 16px 48px rgba(192,57,43,.12);
+}
+
+/* Card preview area */
+.card-preview {
+  height: 180px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* VOID preview: rings */
+.prev-void { background: #000; }
+.prev-void .ring {
+  position: absolute;
+  top: 50%; left: 50%;
+  border-radius: 50%;
+  border: 1px solid rgba(0,229,255,.18);
+  transform: translate(-50%,-50%);
+  animation: ring-spin 8s linear infinite;
+}
+.prev-void .ring:nth-child(1) { width: 60px; height: 60px; animation-duration: 6s; }
+.prev-void .ring:nth-child(2) { width: 100px; height: 100px; animation-duration: 9s; border-color: rgba(0,229,255,.12); }
+.prev-void .ring:nth-child(3) { width: 150px; height: 150px; animation-duration: 12s; border-color: rgba(0,229,255,.07); }
+.prev-void .ring:nth-child(4) { width: 210px; height: 210px; animation-duration: 16s; border-color: rgba(255,149,0,.06); border-radius: 45%; }
+.prev-void .ring:nth-child(5) { width: 270px; height: 270px; animation-duration: 22s; border-color: rgba(0,229,255,.04); }
+
+@keyframes ring-spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+
+.prev-void .center-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #00E5FF;
+  box-shadow: 0 0 20px #00E5FF, 0 0 40px rgba(0,229,255,.4);
+  z-index: 2;
+}
+
+/* SCHEMA preview: dot grid + text */
+.prev-schema {
+  background: #060F1A;
+  background-image: radial-gradient(circle, rgba(78,205,196,.14) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.prev-schema .schema-text {
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: .12em;
+  color: rgba(78,205,196,.7);
+  text-align: center;
+  line-height: 2;
+  z-index: 2;
+}
+.prev-schema .cross {
+  position: absolute;
+  width: 1px; background: rgba(78,205,196,.15);
+}
+.prev-schema .cross.h { width: 100%; height: 1px; top: 50%; }
+.prev-schema .cross.v { height: 100%; width: 1px; left: 50%; }
+.prev-schema .corner {
+  position: absolute;
+  width: 16px; height: 16px;
+  border-color: rgba(78,205,196,.4); border-style: solid;
+}
+.prev-schema .c-tl { top: 10px; left: 10px; border-width: 2px 0 0 2px; }
+.prev-schema .c-tr { top: 10px; right: 10px; border-width: 2px 2px 0 0; }
+.prev-schema .c-bl { bottom: 10px; left: 10px; border-width: 0 0 2px 2px; }
+.prev-schema .c-br { bottom: 10px; right: 10px; border-width: 0 2px 2px 0; }
+
+/* LUMINARY preview: blobs */
+.prev-luminary {
+  background: #FAF6EE;
+  overflow: hidden;
+}
+.prev-luminary .blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(40px);
+}
+.prev-luminary .blob-1 { width: 180px; height: 180px; background: rgba(192,57,43,.2); top: -40px; right: -20px; animation: bf1p 6s ease-in-out infinite; }
+.prev-luminary .blob-2 { width: 160px; height: 160px; background: rgba(46,134,171,.18); bottom: -40px; left: -20px; animation: bf2p 8s ease-in-out infinite; }
+@keyframes bf1p { 0%,100%{transform:scale(1)}50%{transform:scale(1.15)} }
+@keyframes bf2p { 0%,100%{transform:scale(1)}50%{transform:scale(1.1) translate(10px,-10px)} }
+.prev-luminary .lum-text {
+  font-family: Georgia, serif;
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  color: rgba(26,15,10,.15);
+  z-index: 2;
+}
+.prev-luminary .lum-text span { color: rgba(192,57,43,.55); }
+
+/* Card body */
+.card-body {
+  padding: 22px 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.card-theme {
+  font-family: "Courier New", monospace;
+  font-size: 10px;
+  letter-spacing: .25em;
+  text-transform: uppercase;
+}
+.card-void .card-theme { color: #00E5FF; }
+.card-schema .card-theme { color: #4ECDC4; }
+.card-luminary .card-theme { color: #C0392B; }
+
+.card-name {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  line-height: 1.2;
+}
+.card-void .card-name { color: #F0F0F4; }
+.card-schema .card-name { font-family: "Courier New", monospace; color: #E8EAF0; }
+.card-luminary .card-name { color: #1A0F0A; }
+
+.card-desc {
+  font-size: .88rem;
+  line-height: 1.55;
+  margin-top: 4px;
+}
+.card-void .card-desc { color: rgba(240,240,244,.5); font-family: "Courier New", monospace; font-size: .8rem; }
+.card-schema .card-desc { color: rgba(232,234,240,.45); font-family: "Courier New", monospace; font-size: .8rem; }
+.card-luminary .card-desc { color: rgba(26,15,10,.55); font-family: Georgia, serif; font-style: italic; }
+
+.card-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  transition: gap .2s ease;
+}
+.card-void .card-cta { color: #00E5FF; }
+.card-schema .card-cta { color: #4ECDC4; }
+.card-luminary .card-cta { color: #C0392B; }
+.card:hover .card-cta { gap: 14px; }
+
+/* Footer */
+.footer {
+  text-align: center;
+  padding: 0 24px 40px;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  letter-spacing: .15em;
+  color: var(--idx-muted);
+  opacity: .5;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .cards { grid-template-columns: 1fr; padding: 0 16px 60px; }
+  .hero { padding: 56px 16px 36px; }
+}

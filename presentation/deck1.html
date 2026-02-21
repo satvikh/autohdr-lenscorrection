@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lens Correction — VOID</title>
+<style>
+:root{--bg:#000008;--sf:#0c0c18;--sf2:#12121f;--bd:rgba(0,229,255,.12);--cy:#00E5FF;--cyd:rgba(0,229,255,.15);--am:#FF9500;--amd:rgba(255,149,0,.15);--tx:#ECECF0;--mu:#5a5a72;--fh:"Palatino Linotype","Book Antiqua",Palatino,Georgia,serif;--fb:Georgia,"Times New Roman",serif;--fm:"Courier New",Courier,monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:var(--fb);font-size:16px;line-height:1.6}
+.bg-canvas{position:fixed;inset:0;z-index:0;overflow:hidden}
+.bg-canvas::before{content:'';position:absolute;top:50%;left:50%;width:120vmax;height:120vmax;transform:translate(-50%,-50%);background:radial-gradient(ellipse at center,rgba(0,229,255,.03) 0%,rgba(0,229,255,.01) 30%,transparent 60%)}
+.rings{position:absolute;top:50%;left:50%;width:90vmin;height:90vmin;transform:translate(-50%,-50%);animation:rr 60s linear infinite}
+@keyframes rr{to{transform:translate(-50%,-50%) rotate(360deg)}}
+.ring{position:absolute;top:50%;left:50%;border-radius:50%;border:1px solid;transform:translate(-50%,-50%)}
+.r1{width:18%;height:18%;border-color:rgba(0,229,255,.18)}
+.r2{width:34%;height:34%;border-color:rgba(0,229,255,.12)}
+.r3{width:52%;height:52%;border-color:rgba(0,229,255,.08)}
+.r4{width:70%;height:70%;border-color:rgba(0,229,255,.05)}
+.r5{width:88%;height:88%;border-color:rgba(0,229,255,.03)}
+.r6{width:108%;height:108%;border-color:rgba(0,229,255,.02)}
+.r7{width:130%;height:130%;border-color:rgba(0,229,255,.015)}
+.rings2{position:absolute;top:50%;left:50%;width:55vmin;height:55vmin;transform:translate(-50%,-50%);animation:rr2 45s linear infinite}
+@keyframes rr2{to{transform:translate(-50%,-50%) rotate(-360deg)}}
+.ri{position:absolute;top:50%;left:50%;border-radius:42%;border:1px solid rgba(255,149,0,.06);transform:translate(-50%,-50%)}
+.ri1{width:45%;height:45%}
+.ri2{width:72%;height:72%;border-color:rgba(255,149,0,.04)}
+.ri3{width:100%;height:100%;border-color:rgba(255,149,0,.025)}
+.scanlines{position:fixed;inset:0;z-index:1;background:repeating-linear-gradient(to bottom,transparent 0,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px);pointer-events:none}
+.prog-track{position:fixed;top:0;left:0;right:0;height:2px;z-index:100;background:rgba(0,229,255,.08)}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--cy),var(--am));transition:width .4s cubic-bezier(.4,0,.2,1);box-shadow:0 0 10px var(--cy)}
+.counter{position:fixed;top:16px;right:24px;z-index:100;font-family:var(--fm);font-size:11px;letter-spacing:.2em;color:var(--mu)}
+.counter .c{color:var(--cy)}
+.hint{position:fixed;bottom:24px;right:24px;z-index:100;font-family:var(--fm);font-size:10px;letter-spacing:.15em;color:var(--mu);opacity:.4}
+.deck{position:fixed;inset:0;z-index:10}
+.slide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:scale(.97) translateY(22px);filter:blur(6px)}
+.slide.active{opacity:1;pointer-events:all;transform:none;filter:none;transition:opacity .55s ease,transform .55s cubic-bezier(.16,1,.3,1),filter .55s ease}
+.slide.out{opacity:0;transform:scale(1.02) translateY(-14px);filter:blur(3px);transition:opacity .35s ease,transform .35s ease,filter .35s ease}
+.si{max-width:920px;width:calc(100% - 80px);padding:48px 0}
+.tag{font-family:var(--fm);font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:var(--cy);margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.tag::before{content:'';display:inline-block;width:24px;height:1px;background:var(--cy)}
+h1,h2{font-family:var(--fh);font-size:clamp(2.2rem,4.5vw,4rem);font-weight:400;line-height:1.1;letter-spacing:-.02em;color:var(--tx);margin-bottom:20px}
+h2 em{color:var(--cy);font-style:italic}
+.lead{font-size:1.15rem;color:rgba(236,236,240,.8);max-width:620px;line-height:1.7;margin-bottom:28px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start;margin-top:12px}
+.hbox{border:1px solid var(--bd);background:var(--sf);padding:24px 28px;position:relative}
+.hbox::before{content:'';position:absolute;top:0;left:0;width:3px;height:100%;background:var(--cy)}
+ul.facts{list-style:none;display:flex;flex-direction:column;gap:14px;margin-top:4px}
+ul.facts li{display:flex;align-items:flex-start;gap:12px;font-size:1rem;color:rgba(236,236,240,.8);line-height:1.5}
+ul.facts li::before{content:'◆';color:var(--cy);font-size:8px;margin-top:6px;flex-shrink:0}
+.mtable{width:100%;border-collapse:collapse;font-family:var(--fm);font-size:13px;margin-top:12px}
+.mtable th{text-align:left;padding:10px 16px;color:var(--cy);letter-spacing:.1em;text-transform:uppercase;font-size:11px;border-bottom:1px solid rgba(0,229,255,.2);background:rgba(0,229,255,.04)}
+.mtable td{padding:11px 16px;color:var(--tx);border-bottom:1px solid rgba(255,255,255,.04)}
+.mtable tr:hover td{background:rgba(0,229,255,.03)}
+.wt{color:var(--am);font-weight:700}
+.wbar{display:inline-block;height:5px;background:var(--am);opacity:.55;vertical-align:middle;margin-left:8px;border-radius:2px}
+.warn{margin-top:18px;padding:13px 20px;border:1px solid rgba(255,100,50,.3);background:rgba(255,100,50,.06);font-family:var(--fm);font-size:12px;color:rgba(255,149,80,.9);letter-spacing:.04em;display:flex;align-items:center;gap:12px}
+.warn::before{content:'⚠';font-size:17px;color:var(--am);flex-shrink:0}
+.diag{margin-top:20px;padding:24px 28px;border:1px solid var(--bd);background:rgba(0,229,255,.015)}
+.flow{display:flex;align-items:center;justify-content:center;gap:0;flex-wrap:wrap;padding:28px}
+.fn{background:var(--sf);border:1px solid var(--bd);padding:13px 18px;text-align:center;font-family:var(--fm);font-size:11px;letter-spacing:.05em;line-height:1.4;color:var(--tx);min-width:84px;transition:border-color .3s,box-shadow .3s}
+.fn:hover{border-color:var(--cy);box-shadow:0 0 14px rgba(0,229,255,.14)}
+.fn.hl{border-color:var(--cy);background:rgba(0,229,255,.05);color:var(--cy)}
+.fn.am{border-color:rgba(255,149,0,.4);background:rgba(255,149,0,.05);color:var(--am)}
+.fn.ok{border-color:rgba(0,200,100,.4);background:rgba(0,200,100,.05);color:rgba(0,200,100,.9)}
+.fn.warn2{border-color:rgba(255,200,0,.35);background:rgba(255,200,0,.05);color:rgba(255,200,0,.9)}
+.fn.fail{border-color:rgba(255,100,50,.35);background:rgba(255,100,50,.05);color:rgba(255,100,50,.9)}
+.fa{color:var(--mu);font-size:17px;padding:0 7px;flex-shrink:0}
+.model-wrap{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;padding:20px}
+.branch-col{display:flex;flex-direction:column;gap:8px}
+.mrow{display:flex;align-items:center;gap:8px}
+.inf-wrap{display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px}
+.inf-row{display:flex;align-items:center;gap:8px}
+.inf-branch{display:flex;align-items:flex-start;gap:32px;margin-top:4px}
+.inf-col{display:flex;flex-direction:column;align-items:center;gap:5px}
+.inf-lbl{font-family:var(--fm);font-size:9px;color:var(--mu);letter-spacing:.12em}
+.va{transform:rotate(90deg);display:block;color:var(--mu);font-size:14px}
+.title-wrap{text-align:center;display:flex;flex-direction:column;align-items:center}
+.t-main{font-family:var(--fh);font-size:clamp(3rem,6.5vw,5.5rem);font-weight:400;letter-spacing:-.025em;line-height:1.05;margin-bottom:12px;background:linear-gradient(135deg,#ECECF0 0%,rgba(0,229,255,.85) 45%,#FF9500 75%,#ECECF0 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.t-sub{font-family:var(--fm);font-size:13px;letter-spacing:.25em;text-transform:uppercase;color:var(--mu);margin-bottom:44px}
+.t-line{width:80px;height:1px;background:linear-gradient(90deg,transparent,var(--cy),transparent);margin:20px auto}
+.team{display:flex;align-items:center;gap:28px;margin-bottom:18px}
+.tm{font-family:var(--fm);font-size:12px;letter-spacing:.1em;color:rgba(236,236,240,.55)}
+.ts{width:1px;height:18px;background:var(--mu);opacity:.35}
+.t-date{font-family:var(--fm);font-size:11px;letter-spacing:.2em;color:var(--mu)}
+.nav-area{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:100;display:flex;align-items:center;gap:7px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--mu);border:none;cursor:pointer;padding:0;transition:all .3s;opacity:.45}
+.dot.active{background:var(--cy);opacity:1;box-shadow:0 0 8px var(--cy);width:20px;border-radius:3px}
+.dot:hover:not(.active){opacity:.75;background:var(--tx)}
+.nav-btn{position:fixed;top:50%;transform:translateY(-50%);z-index:100;background:rgba(0,229,255,.04);border:1px solid var(--bd);color:var(--mu);width:42px;height:42px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:17px;transition:all .2s}
+.nav-btn:hover{background:rgba(0,229,255,.09);border-color:rgba(0,229,255,.3);color:var(--cy)}
+.prev{left:18px}
+.next{right:18px}
+.slide.active .ai{animation:cin .55s cubic-bezier(.16,1,.3,1) both}
+@keyframes cin{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.d1{animation-delay:.05s}.d2{animation-delay:.15s}.d3{animation-delay:.25s}.d4{animation-delay:.35s}.d5{animation-delay:.45s}
+.mono{font-family:var(--fm)}
+.cy{color:var(--cy)}.am{color:var(--am)}.mu{color:var(--mu)}
+.pu{color:#9966FF}
+</style>
+</head>
+<body>
+<div class="bg-canvas">
+  <div class="rings"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="ring r4"></div><div class="ring r5"></div><div class="ring r6"></div><div class="ring r7"></div></div>
+  <div class="rings2"><div class="ri ri1"></div><div class="ri ri2"></div><div class="ri ri3"></div></div>
+</div>
+<div class="scanlines"></div>
+<div class="prog-track"><div class="prog-fill" id="pf" style="width:10%"></div></div>
+<div class="counter"><span class="c" id="cn">01</span><span style="opacity:.3"> / </span><span>10</span></div>
+<div class="hint">[F] fullscreen · ← → navigate</div>
+<div class="deck" id="deck">
+
+<!-- S1 TITLE -->
+<div class="slide active" data-i="0">
+<div class="si title-wrap">
+  <div class="ai d1 mono" style="font-size:11px;letter-spacing:.3em;color:var(--mu);text-transform:uppercase;margin-bottom:20px">◈ Machine Learning Project ◈</div>
+  <div class="t-main ai d2">Automatic<br>Lens Correction</div>
+  <div class="t-line ai d3"></div>
+  <div class="t-sub ai d3">Geometry-First Deep Learning Pipeline</div>
+  <div class="team ai d4"><span class="tm">Satvik</span><span class="ts"></span><span class="tm">Kush</span><span class="ts"></span><span class="tm">Suhaas</span></div>
+  <div class="t-date ai d5">February 2026</div>
+</div>
+</div>
+
+<!-- S2 PROBLEM -->
+<div class="slide" data-i="1">
+<div class="si">
+  <div class="tag ai d1">Problem</div>
+  <h2 class="ai d2">Lens Distortion<br><em>Without</em> Profiles</h2>
+  <div class="two">
+    <div>
+      <p class="lead ai d3">Barrel and pincushion distortion bow straight lines — but standard correction requires EXIF lens profiles that are often unavailable.</p>
+      <ul class="facts">
+        <li class="ai d3">Straight lines appear curved near image edges</li>
+        <li class="ai d4">Wide-angle lenses exhibit strong radial distortion</li>
+        <li class="ai d4">No universal fix without knowing the exact lens model</li>
+        <li class="ai d5">Challenge: correct <em class="cy">any</em> image with no prior knowledge</li>
+      </ul>
+    </div>
+    <div class="hbox ai d4" style="display:flex;flex-direction:column;gap:18px">
+      <div><div class="mono" style="font-size:10px;letter-spacing:.2em;color:var(--am);margin-bottom:8px">BARREL DISTORTION</div><div style="font-size:.95rem;color:rgba(236,236,240,.7)">Radial expansion: lines bow outward. Common in wide-angle lenses.</div></div>
+      <div style="border-top:1px solid var(--bd);padding-top:18px"><div class="mono" style="font-size:10px;letter-spacing:.2em;color:var(--cy);margin-bottom:8px">OUR APPROACH</div><div style="font-size:.95rem;color:rgba(236,236,240,.7)">Predict warp parameters directly from the distorted image — no profile required.</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- S3 WHY -->
+<div class="slide" data-i="2">
+<div class="si">
+  <div class="tag ai d1">Why It Matters</div>
+  <h2 class="ai d2">Geometry is<br>a <em>Trust Signal</em></h2>
+  <div class="two">
+    <ul class="facts">
+      <li class="ai d2"><strong>Real estate photography</strong><br><span style="font-size:.92rem">Buyers expect straight walls. Distortion reads as unprofessional.</span></li>
+      <li class="ai d3"><strong>Architectural imaging</strong><br><span style="font-size:.92rem">Structural lines must be preserved for technical accuracy.</span></li>
+      <li class="ai d4"><strong>User experience</strong><br><span style="font-size:.92rem">Distorted images feel low-quality. Correct geometry signals care.</span></li>
+      <li class="ai d5"><strong>Medical &amp; AR/VR</strong><br><span style="font-size:.92rem">Precise geometry is a safety and accuracy requirement.</span></li>
+    </ul>
+    <div class="ai d3 hbox" style="padding:28px">
+      <div class="mono" style="font-size:10px;letter-spacing:.2em;color:var(--cy);margin-bottom:14px">KEY INSIGHT</div>
+      <p style="color:rgba(236,236,240,.85);font-size:1rem;line-height:1.65">A corrected image is not just more beautiful — it is geometrically honest. Straight lines are the fundamental promise of a trustworthy photograph.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- S4 METRICS -->
+<div class="slide" data-i="3">
+<div class="si">
+  <div class="tag ai d1">Evaluation</div>
+  <h2 class="ai d2">Scoring Metric<br><em>Breakdown</em></h2>
+  <div class="ai d3">
+    <table class="mtable">
+      <thead><tr><th>Metric</th><th>Weight</th><th>What It Measures</th></tr></thead>
+      <tbody>
+        <tr><td>Edge Similarity</td><td><span class="wt">40%</span><span class="wbar" style="width:80px"></span></td><td>Sharpness &amp; placement of edges vs. ground truth</td></tr>
+        <tr><td>Line Straightness</td><td><span class="wt">22%</span><span class="wbar" style="width:44px"></span></td><td>How straight lines are in the corrected output</td></tr>
+        <tr><td>Gradient Orientation</td><td><span class="wt">18%</span><span class="wbar" style="width:36px"></span></td><td>Texture alignment with ground truth gradients</td></tr>
+        <tr><td>SSIM</td><td><span class="wt">15%</span><span class="wbar" style="width:30px"></span></td><td>Perceptual structural similarity</td></tr>
+        <tr><td>Pixel MAE</td><td><span class="wt">5%</span><span class="wbar" style="width:10px"></span></td><td>Raw per-pixel accuracy</td></tr>
+      </tbody>
+    </table>
+    <div class="warn ai d4">HARD-FAIL RISK — Catastrophic local errors or too-low edge detection triggers automatic disqualification regardless of other scores</div>
+  </div>
+</div>
+</div>
+
+<!-- S5 STRATEGY -->
+<div class="slide" data-i="4">
+<div class="si">
+  <div class="tag ai d1">Strategy</div>
+  <h2 class="ai d2">Predict a <em>Warp Grid</em>,<br>Not Pixels</h2>
+  <p class="lead ai d3">Instead of generating corrected pixels, we predict where each output pixel samples from the distorted input — a backward warp. No hallucination, pure geometry.</p>
+  <div class="diag flow ai d4">
+    <div class="fn">Distorted<br>Image</div><div class="fa">→</div>
+    <div class="fn hl">Neural<br>Network</div><div class="fa">→</div>
+    <div class="fn">Warp<br>Grid</div><div class="fa">→</div>
+    <div class="fn am">grid_sample<br><span style="font-size:9px;opacity:.7">Backward Warp</span></div><div class="fa">→</div>
+    <div class="fn ok">Corrected<br>Image</div>
+  </div>
+  <ul class="facts ai d5" style="margin-top:20px">
+    <li>No hallucinated pixels — only resampling from the source image</li>
+    <li>One fused pass — no sequential warps, no compounding errors</li>
+    <li>Backward warp: output coords map to input coords via grid_sample</li>
+  </ul>
+</div>
+</div>
+
+<!-- S6 MODEL -->
+<div class="slide" data-i="5">
+<div class="si">
+  <div class="tag ai d1">Architecture</div>
+  <h2 class="ai d2">Two-Head<br><em>Prediction Model</em></h2>
+  <div class="diag model-wrap ai d3">
+    <div class="fn" style="border-color:rgba(0,229,255,.2)">Input<br>Image</div>
+    <div class="fa">→</div>
+    <div class="fn" style="border-color:rgba(150,150,255,.25);color:#AAAAE8">Backbone<br>Encoder</div>
+    <div class="fa">→</div>
+    <div class="branch-col">
+      <div class="mrow">
+        <div class="fn hl" style="font-size:10px">Parametric Head<br><span style="font-size:9px;opacity:.7">k1 k2 k3 p1 p2 dcx dcy s</span></div>
+        <div class="fa">→</div>
+        <div class="fn hl" style="font-size:10px">Param<br>Grid</div>
+      </div>
+      <div class="mrow">
+        <div class="fn am" style="font-size:10px">Residual Head<br><span style="font-size:9px;opacity:.7">Low-res flow</span></div>
+        <div class="fa">→</div>
+        <div class="fn am" style="font-size:10px">Upsample<br>Flow</div>
+      </div>
+    </div>
+    <div class="fa">→</div>
+    <div class="branch-col" style="align-items:center;gap:6px">
+      <div class="fn" style="border-color:rgba(150,100,255,.4);color:#AA88FF;background:rgba(150,100,255,.05)">Fuse<br>Grids</div>
+      <span class="va">→</span>
+      <div class="fn ok">Output<br>Image</div>
+    </div>
+  </div>
+  <ul class="facts ai d4" style="margin-top:18px">
+    <li><strong class="cy">Parametric head</strong> — 8 Brown-Conrady params, bounded via clamping for safety</li>
+    <li><strong class="am">Residual head</strong> — low-res correction flow, upsampled and fused for local cleanup</li>
+  </ul>
+</div>
+</div>
+
+<!-- S7 DATA -->
+<div class="slide" data-i="6">
+<div class="si">
+  <div class="tag ai d1">Data Pipeline</div>
+  <h2 class="ai d2">Paired Dataset<br>&amp; <em>Stratified Splits</em></h2>
+  <div class="two">
+    <ul class="facts">
+      <li class="ai d2"><strong class="cy">PairedLensDataset</strong><br>Reads CSV (image_id, input_path, target_path). Float32 RGB [C,H,W] in [0,1].</li>
+      <li class="ai d3"><strong>Dataset Audit</strong><br>Per-pair: image sizes, MAE proxy, edge density (Canny), Hough line richness</li>
+      <li class="ai d4"><strong>Stratified Splits</strong><br>Bins by resolution × line richness — balanced train/val distribution</li>
+      <li class="ai d5"><strong>PairedTransforms</strong><br>Resize, crop, hflip — identical ops applied to both input and target</li>
+    </ul>
+    <div class="ai d3">
+      <div class="hbox" style="padding:22px;margin-bottom:12px">
+        <div class="mono" style="font-size:10px;color:var(--am);letter-spacing:.2em;margin-bottom:12px">AUDIT COLUMNS</div>
+        <div class="mono" style="font-size:11px;line-height:2;color:rgba(236,236,240,.7)">image_id · input_h · input_w<br>target_h · target_w · aspect<br>mae_input_target · edge_density<br>line_count · line_total_len</div>
+      </div>
+      <div class="mono" style="font-size:11px;color:var(--mu);line-height:1.9;padding-left:14px;border-left:1px solid var(--bd)">
+        Stratification key:<br><span class="cy">res_bin</span> × <span class="am">line_bin</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- S8 TRAINING -->
+<div class="slide" data-i="7">
+<div class="si">
+  <div class="tag ai d1">Training</div>
+  <h2 class="ai d2">Losses Aligned<br>to <em>Geometry</em></h2>
+  <div class="two">
+    <ul class="facts">
+      <li class="ai d2"><strong class="cy">Stage 1 — Parametric Head</strong><br>Edge loss + gradient orientation loss. Trains core Brown-Conrady correction.</li>
+      <li class="ai d3"><strong class="am">Stage 2 — Residual Head</strong><br>Adds SSIM + smoothness regularizer. Local flow for fine detail.</li>
+      <li class="ai d4"><strong>Stage 3 — End-to-End</strong><br>Full pipeline fine-tuning with combined metric-aligned loss weights.</li>
+    </ul>
+    <div class="ai d3">
+      <div class="hbox" style="padding:26px">
+        <div class="mono" style="font-size:10px;color:var(--cy);letter-spacing:.2em;margin-bottom:14px">LOSS PRIORITY</div>
+        <div style="display:flex;flex-direction:column;gap:10px;font-family:var(--fm);font-size:12px">
+          <div style="display:flex;justify-content:space-between"><span>Edge Loss</span><span class="cy">● HIGH</span></div>
+          <div style="display:flex;justify-content:space-between"><span>Line Straightness</span><span class="cy">● HIGH</span></div>
+          <div style="display:flex;justify-content:space-between"><span>Gradient Orient.</span><span class="am">● MED</span></div>
+          <div style="display:flex;justify-content:space-between"><span>SSIM</span><span class="am">● MED</span></div>
+          <div style="display:flex;justify-content:space-between"><span>Smoothness Reg.</span><span class="mu">○ LOW</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- S9 INFERENCE -->
+<div class="slide" data-i="8">
+<div class="si">
+  <div class="tag ai d1">Inference</div>
+  <h2 class="ai d2">Safe, Deterministic<br><em>Full-Res Warp</em></h2>
+  <div class="diag ai d3" style="padding:18px">
+    <div class="inf-wrap">
+      <div class="inf-row">
+        <div class="fn">Load<br>Image</div><div class="fa" style="font-size:14px">→</div>
+        <div class="fn">Model<br>Forward</div><div class="fa" style="font-size:14px">→</div>
+        <div class="fn">Build<br>Grid</div><div class="fa" style="font-size:14px">→</div>
+        <div class="fn warn2">Safety<br>Check</div>
+      </div>
+      <div class="inf-branch">
+        <div class="inf-col">
+          <div class="inf-lbl">✓ PASS</div>
+          <span class="va">→</span>
+          <div class="fn ok">grid_sample<br>Warp</div>
+          <span class="va">→</span>
+          <div class="fn ok">Save JPEG<br>+ ZIP</div>
+        </div>
+        <div class="inf-col">
+          <div class="inf-lbl">✗ FAIL</div>
+          <span class="va">→</span>
+          <div class="fn fail">Fallback<br>Hierarchy</div>
+          <div class="mono" style="font-size:9px;color:var(--mu);text-align:center;line-height:1.9;margin-top:6px">hybrid<br>→ param-only<br>→ conservative</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <ul class="facts ai d4" style="margin-top:14px">
+    <li>Safety checks: OOB ratio · Jacobian determinant · border validity</li>
+    <li>Deterministic JPEG output — quality 95, 4:4:4 subsampling, no randomness</li>
+  </ul>
+</div>
+</div>
+
+<!-- S10 SUMMARY -->
+<div class="slide" data-i="9">
+<div class="si">
+  <div class="tag ai d1">Summary</div>
+  <h2 class="ai d2">What We <em>Built</em></h2>
+  <div class="two">
+    <div>
+      <ul class="facts">
+        <li class="ai d2">Geometry-first pipeline: no pixel hallucination</li>
+        <li class="ai d3">Brown-Conrady parametric model + residual flow head</li>
+        <li class="ai d3">Safety fallback hierarchy for robust inference</li>
+        <li class="ai d4">Paired dataset pipeline with stratified splits</li>
+        <li class="ai d4">Proxy scorer aligned to leaderboard metrics</li>
+      </ul>
+      <div class="ai d5 hbox" style="margin-top:24px;padding:16px 20px">
+        <div class="mono" style="font-size:10px;color:var(--cy);letter-spacing:.15em;margin-bottom:8px">NEXT STEPS</div>
+        <div class="mono" style="font-size:11px;color:var(--mu);line-height:1.9">Full model training · Ensemble strategies<br>Test-time augmentation · Submission tooling</div>
+      </div>
+    </div>
+    <div class="ai d3">
+      <div style="border:1px solid var(--bd);padding:26px">
+        <div class="mono" style="font-size:10px;letter-spacing:.2em;color:var(--mu);margin-bottom:20px">TEAM ROLES</div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div><div class="mono" style="font-size:11px;color:var(--cy);letter-spacing:.1em;margin-bottom:4px">SATVIK</div><div style="font-size:.9rem;color:rgba(236,236,240,.7)">Geometry · Inference · Safety</div></div>
+          <div><div class="mono" style="font-size:11px;color:var(--am);letter-spacing:.1em;margin-bottom:4px">KUSH</div><div style="font-size:.9rem;color:rgba(236,236,240,.7)">Model · Losses · Training</div></div>
+          <div><div class="mono" style="font-size:11px;color:#9966FF;letter-spacing:.1em;margin-bottom:4px">SUHAAS</div><div style="font-size:.9rem;color:rgba(236,236,240,.7)">Data · Proxy Scorer · QA</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+</div><!-- /deck -->
+<div class="nav-area" id="nd"></div>
+<button class="nav-btn prev" id="pb">←</button>
+<button class="nav-btn next" id="nb">→</button>
+<script>
+const T=10;let c=0,busy=false;
+const ss=document.querySelectorAll('.slide');
+const pf=document.getElementById('pf');
+const cn=document.getElementById('cn');
+const nd=document.getElementById('nd');
+const pb=document.getElementById('pb');
+const nb=document.getElementById('nb');
+for(let i=0;i<T;i++){const d=document.createElement('button');d.className='dot'+(i===0?' active':'');d.setAttribute('aria-label','Slide '+(i+1));d.onclick=()=>go(i);nd.appendChild(d);}
+function ui(){pf.style.width=((c+1)/T*100)+'%';cn.textContent=String(c+1).padStart(2,'0');nd.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('active',i===c));pb.style.opacity=c===0?'0.2':'1';nb.style.opacity=c===T-1?'0.2':'1';}
+function go(n){if(busy||n===c||n<0||n>=T)return;busy=true;const o=ss[c];const e=ss[n];o.classList.remove('active');o.classList.add('out');setTimeout(()=>{o.classList.remove('out');e.classList.add('active');c=n;ui();setTimeout(()=>{busy=false;},600);},360);}
+function nxt(){go(c+1);}function prv(){go(c-1);}
+pb.onclick=prv;nb.onclick=nxt;
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();nxt();}else if(e.key==='ArrowLeft'){e.preventDefault();prv();}else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});else document.exitFullscreen();}});
+let tx=0;document.addEventListener('touchstart',e=>{tx=e.changedTouches[0].clientX;},{passive:true});document.addEventListener('touchend',e=>{const dx=e.changedTouches[0].clientX-tx;if(Math.abs(dx)>50){dx<0?nxt():prv();}},{passive:true});
+ui();
+</script>
+</body>
+</html>
