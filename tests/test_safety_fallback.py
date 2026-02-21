@@ -57,9 +57,31 @@ def test_fallback_order_and_hard_unsafe_warning():
     assert safety_report["safe"] is False
 
 
+def test_invalid_border_ratio_is_computed_from_grid_when_not_provided():
+    grid = make_identity_grid(batch=1, height=9, width=9, dtype=torch.float32)
+    # Push all border samples out of bounds while keeping interior valid.
+    grid[:, 0, :, 0] = 2.0
+    grid[:, -1, :, 0] = 2.0
+    grid[:, :, 0, 1] = 2.0
+    grid[:, :, -1, 1] = 2.0
+
+    cfg = SafetyConfig(
+        max_out_of_bounds_ratio=1.0,  # isolate border check
+        max_invalid_border_ratio=0.0,
+        max_negative_det_pct=100.0,
+        min_det_min=-10.0,
+        min_det_p01=-10.0,
+    )
+    report = evaluate_safety(grid, config=cfg)
+
+    assert report["metrics"]["invalid_border_ratio"] > 0.0
+    assert "INVALID_BORDER_RATIO_EXCEEDED" in report["reasons"]
+
+
 def _run_all():
     test_unsafe_grid_reports_not_safe_and_reasons()
     test_fallback_order_and_hard_unsafe_warning()
+    test_invalid_border_ratio_is_computed_from_grid_when_not_provided()
 
 
 if __name__ == "__main__":
