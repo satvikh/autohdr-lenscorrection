@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
 
 from src.inference.predictor import Predictor
 from src.inference.writer import save_jpeg
+from src.models.hybrid_model import HybridLensCorrectionModel
+from src.train.checkpointing import load_checkpoint
+from src.train.config_loader import load_model_config
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -28,6 +31,29 @@ class NeutralModel:
         b = image.shape[0]
         params = torch.zeros((b, 8), dtype=image.dtype, device=image.device)
         params[:, 7] = 1.0
+        return {"params": params}
+
+
+class CheckpointModel:
+    """Checkpoint-backed model adapter exposing Predictor-compatible outputs."""
+
+    def __init__(self, *, model_config_path: Path, checkpoint_path: Path, device: torch.device):
+        model_cfg, bounds = load_model_config(model_config_path)
+        model = HybridLensCorrectionModel(config=model_cfg, param_bounds=bounds)
+        _ = load_checkpoint(checkpoint_path, model=model, map_location=device)
+        self._model = model.to(device).eval()
+        self._device = device
+
+    def __call__(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
+        with torch.no_grad():
+            out = self._model(image.to(self._device))
+        params = out["params"].to(device=image.device, dtype=image.dtype)
+        residual = out.get("residual_flow")
+        if torch.is_tensor(residual):
+            return {
+                "params": params,
+                "residual_flow": residual.to(device=image.device, dtype=image.dtype),
+            }
         return {"params": params}
 
 
@@ -50,27 +76,57 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _resolve_device(requested: str) -> torch.device:
+    req = str(requested).strip().lower()
+    if req.startswith("cuda") and not torch.cuda.is_available():
+        print(f"[warn] Requested device '{requested}' unavailable; falling back to cpu.")
+        return torch.device("cpu")
+    if req.startswith("mps") and not torch.backends.mps.is_available():
+        print(f"[warn] Requested device '{requested}' unavailable; falling back to cpu.")
+        return torch.device("cpu")
+    return torch.device(requested)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inference over a directory of images.")
     parser.add_argument("input_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--checkpoint-id", type=str, default="neutral_stub")
+    parser.add_argument("--checkpoint-path", type=Path, default=None)
+    parser.add_argument("--model-config", type=Path, default=Path("configs/model/resnet34_baseline.yaml"))
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--config-path", type=Path, default=None)
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir
     output_dir: Path = args.output_dir
     checkpoint_id: str = args.checkpoint_id
+    checkpoint_path: Path | None = args.checkpoint_path
+    model_config: Path = args.model_config
+    device = _resolve_device(args.device)
     config_path: Path | None = args.config_path
 
     if not input_dir.exists() or not input_dir.is_dir():
         raise SystemExit(f"input_dir is not a directory: {input_dir}")
     if config_path is not None and (not config_path.exists() or not config_path.is_file()):
         raise SystemExit(f"config_path is not a file: {config_path}")
+    if checkpoint_path is not None and (not checkpoint_path.exists() or not checkpoint_path.is_file()):
+        raise SystemExit(f"checkpoint_path is not a file: {checkpoint_path}")
+    if checkpoint_path is not None and (not model_config.exists() or not model_config.is_file()):
+        raise SystemExit(f"model_config is not a file: {model_config}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model = NeutralModel()
+    if checkpoint_path is None:
+        model = NeutralModel()
+        model_source = "neutral_stub"
+    else:
+        model = CheckpointModel(
+            model_config_path=model_config,
+            checkpoint_path=checkpoint_path,
+            device=device,
+        )
+        model_source = "checkpoint"
     predictor = Predictor(model=model)
 
     images = _collect_images(input_dir)
@@ -136,6 +192,8 @@ def main() -> None:
 
     run_metadata = {
         "checkpoint_id": checkpoint_id,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "model_source": model_source,
         "config_hash": config_hash,
         "timestamp_utc": run_timestamp_utc,
         "input_dir": str(input_dir),

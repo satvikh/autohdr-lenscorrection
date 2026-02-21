@@ -67,6 +67,29 @@ def _find_pred_path(pred_dir: Path, image_id: str, allowed_ext: tuple[str, ...])
     return None
 
 
+def _resolve_maybe_relative_path(raw_path: str, *, split_parent: Path) -> Path:
+    """Resolve potentially-relative paths from multiple common bases.
+
+    Priority:
+    1) absolute path as-is
+    2) split_csv parent (legacy behavior)
+    3) current working directory (common for repo-root relative CSVs)
+    """
+    p = Path(raw_path)
+    if p.is_absolute():
+        return p
+
+    from_split = split_parent / p
+    if from_split.exists():
+        return from_split
+
+    from_cwd = Path.cwd() / p
+    if from_cwd.exists():
+        return from_cwd
+
+    return from_split
+
+
 def _build_gt_map(split_csv: Path, gt_root: str | None) -> dict[str, Path]:
     mapping: dict[str, Path] = {}
     with split_csv.open("r", encoding="utf-8", newline="") as f:
@@ -87,9 +110,7 @@ def _build_gt_map(split_csv: Path, gt_root: str | None) -> dict[str, Path]:
                 continue
 
             if row.get("target_path"):
-                tp = Path(str(row["target_path"]).strip())
-                if not tp.is_absolute():
-                    tp = split_parent / tp
+                tp = _resolve_maybe_relative_path(str(row["target_path"]).strip(), split_parent=split_parent)
                 mapping[image_id] = tp
                 continue
 
@@ -110,6 +131,18 @@ def _hardfail_total(config: dict) -> float:
     if fail_policy == "score_neg_inf":
         return -1e9
     return float("nan")
+
+
+def _empty_hardfail_score(total: float, reasons: list[str]) -> dict:
+    subs = {"edge": float("nan"), "line": float("nan"), "grad": float("nan"), "ssim": float("nan"), "mae": float("nan")}
+    flags = {"hard_fail": True, "hardfail": True, "reasons": reasons}
+    return {
+        "total_score": total,
+        "total": total,
+        "sub_scores": subs,
+        "subscores": subs,
+        "flags": flags,
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -148,22 +181,14 @@ def run(args: argparse.Namespace) -> int:
                 reasons.append("missing_prediction")
             if not gt_path.exists():
                 reasons.append("missing_gt")
-            score = {
-                "total": _hardfail_total(config),
-                "subscores": {"edge": float("nan"), "line": float("nan"), "grad": float("nan"), "ssim": float("nan"), "mae": float("nan")},
-                "flags": {"hardfail": True, "reasons": reasons},
-            }
+            score = _empty_hardfail_score(_hardfail_total(config), reasons)
             mae_raw = float("nan")
             mae_score = float("nan")
         else:
             try:
                 score = compute_proxy_score(pred_path, gt_path, config)
             except Exception as exc:
-                score = {
-                    "total": _hardfail_total(config),
-                    "subscores": {"edge": float("nan"), "line": float("nan"), "grad": float("nan"), "ssim": float("nan"), "mae": float("nan")},
-                    "flags": {"hardfail": True, "reasons": [f"score_error:{exc}"]},
-                }
+                score = _empty_hardfail_score(_hardfail_total(config), [f"score_error:{exc}"])
             try:
                 mae_raw = float(compute_mae(pred_path, gt_path, config))
                 mae_score = float(max(0.0, min(1.0, 1.0 - max(0.0, min(1.0, mae_raw)))))
@@ -174,12 +199,14 @@ def run(args: argparse.Namespace) -> int:
         row = {"image_id": image_id, **score}
         rows.append(row)
 
-        subs = score.get("subscores", {})
+        subs = score.get("sub_scores", score.get("subscores", {}))
+        total_score = score.get("total_score", score.get("total", float("nan")))
+        hard_fail = bool(score.get("flags", {}).get("hard_fail", score.get("flags", {}).get("hardfail", False)))
         per_image_records.append(
             {
                 "image_id": image_id,
-                "total": score.get("total", float("nan")),
-                "hardfail": bool(score.get("flags", {}).get("hardfail", False)),
+                "total": total_score,
+                "hardfail": hard_fail,
                 "reasons": "|".join(str(x) for x in score.get("flags", {}).get("reasons", [])),
                 "edge": subs.get("edge", float("nan")),
                 "ssim": subs.get("ssim", float("nan")),

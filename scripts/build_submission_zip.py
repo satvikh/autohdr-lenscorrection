@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+from datetime import datetime, timezone
+import hashlib
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -56,6 +59,42 @@ def _allowed_ext(config: dict) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_inference_run_metadata(pred_dir: Path) -> dict:
+    path = pred_dir / "run_metadata.json"
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _git_commit() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    commit = proc.stdout.strip()
+    return commit or None
+
+
 def _load_ids_from_split(split_csv: Path) -> list[str]:
     ids = []
     with split_csv.open("r", encoding="utf-8", newline="") as f:
@@ -104,6 +143,28 @@ def _find_pred_file(pred_dir: Path, image_id: str, allowed_ext: tuple[str, ...])
     return None
 
 
+def _normalize_zip_subdir(raw: str) -> str:
+    text = str(raw).strip().replace("\\", "/").strip("/")
+    if not text:
+        return ""
+    parts = [p for p in text.split("/") if p]
+    if any(p in {".", ".."} for p in parts):
+        raise ValueError(f"submission.zip_subdir must not contain '.' or '..': {raw!r}")
+    if any(":" in p for p in parts):
+        raise ValueError(f"submission.zip_subdir must not contain drive/absolute markers: {raw!r}")
+    return "/".join(parts)
+
+
+def _validate_zip_contents(out_zip: Path, expected_arcnames: list[str]) -> None:
+    with zipfile.ZipFile(out_zip, "r") as zf:
+        actual = sorted(info.filename for info in zf.infolist() if not info.is_dir())
+    expected = sorted(expected_arcnames)
+    if actual != expected:
+        raise RuntimeError(
+            "zip structure mismatch: archive entries do not match expected prediction manifest"
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for submission zip creation."""
     parser = argparse.ArgumentParser(description="Build submission zip after QA checks.")
@@ -123,6 +184,7 @@ def run(args: argparse.Namespace) -> int:
     """Run QA checks, write QA report, and build submission zip when allowed."""
     config = _load_config(args.config)
     pred_dir = Path(args.pred_dir)
+    infer_meta = _load_inference_run_metadata(pred_dir)
 
     if args.split_csv:
         required_ids = _load_ids_from_split(Path(args.split_csv))
@@ -140,6 +202,11 @@ def run(args: argparse.Namespace) -> int:
     )
 
     qa_ok = bool(filename_res.get("ok", False) and image_res.get("ok", False))
+    checkpoint_id = str(config.get("submission", {}).get("checkpoint_id", "")).strip()
+    if not checkpoint_id:
+        checkpoint_id = str(infer_meta.get("checkpoint_id", "unknown"))
+
+    config_hash = _sha256_file(Path(args.config)) if args.config else infer_meta.get("config_hash")
     qa_report = {
         "ok": qa_ok,
         "filename_check": filename_res,
@@ -147,6 +214,15 @@ def run(args: argparse.Namespace) -> int:
         "strict": bool(args.strict),
         "force_zip": bool(args.force_zip),
         "required_count": len(required_ids),
+        "manifest": {
+            "checkpoint_id": checkpoint_id,
+            "checkpoint_path": infer_meta.get("checkpoint_path"),
+            "model_source": infer_meta.get("model_source"),
+            "config_path": str(args.config) if args.config else None,
+            "config_hash": config_hash,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "git_commit": _git_commit(),
+        },
     }
 
     out_zip = Path(args.out_zip)
@@ -158,7 +234,7 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     allowed_ext = _allowed_ext(config)
-    zip_subdir = str(config.get("submission", {}).get("zip_subdir", "")).strip()
+    zip_subdir = _normalize_zip_subdir(str(config.get("submission", {}).get("zip_subdir", "")).strip())
 
     files_to_zip: list[tuple[Path, str]] = []
     for image_id in required_ids:
@@ -170,9 +246,13 @@ def run(args: argparse.Namespace) -> int:
             arcname = f"{zip_subdir.rstrip('/')}/{arcname}"
         files_to_zip.append((pred_path, arcname))
 
+    expected_arcnames: list[str] = []
     with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for src, arcname in sorted(files_to_zip, key=lambda x: x[1]):
             zf.write(src, arcname=arcname)
+            expected_arcnames.append(arcname)
+
+    _validate_zip_contents(out_zip, expected_arcnames)
 
     return 0
 

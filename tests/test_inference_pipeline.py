@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 from src.inference.predictor import Predictor
 from src.inference.writer import save_jpeg
+from src.models.hybrid_model import HybridLensCorrectionModel
+from src.train.config_loader import load_model_config
 
 
 class StubNeutralModel:
@@ -117,6 +120,26 @@ def test_hybrid_huge_residual_fallback(tmp_path: Path):
     assert metadata["safety"]["safe"] is True
 
 
+def test_predictor_uses_single_fused_warp_call(tmp_path: Path, monkeypatch):
+    input_path = tmp_path / "input_single_pass.png"
+    _make_test_image(input_path, h=24, w=30)
+
+    calls = {"count": 0}
+    from src.geometry.warp_ops import warp_image as real_warp_image
+
+    def _warp_once(*args, **kwargs):
+        calls["count"] += 1
+        return real_warp_image(*args, **kwargs)
+
+    monkeypatch.setattr("src.inference.predictor.warp_image", _warp_once)
+
+    predictor = Predictor(model=StubHybridSmallResidualModel())
+    _, metadata = predictor.predict(input_path)
+
+    assert metadata["mode_used"] in {"hybrid", "param_only", "param_only_conservative"}
+    assert calls["count"] == 1
+
+
 def test_infer_test_writes_run_metadata_json(tmp_path: Path):
     input_dir = tmp_path / "inputs"
     output_dir = tmp_path / "outputs"
@@ -139,7 +162,9 @@ def test_infer_test_writes_run_metadata_json(tmp_path: Path):
         "--config-path",
         str(config_path),
     ]
-    subprocess.run(cmd, cwd=str(ROOT), check=True)
+    env = os.environ.copy()
+    env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    subprocess.run(cmd, cwd=str(ROOT), check=True, env=env)
 
     metadata_path = output_dir / "run_metadata.json"
     assert metadata_path.exists()
@@ -149,7 +174,48 @@ def test_infer_test_writes_run_metadata_json(tmp_path: Path):
     assert data["config_hash"] != "none"
     assert data["processed"] == 2
     assert isinstance(data["mode_counts"], dict)
+    assert isinstance(data["fallback_counts"], dict)
+    assert isinstance(data["safety_reason_counts"], dict)
     assert "timestamp_utc" in data
+
+
+def test_infer_test_checkpoint_model_path(tmp_path: Path):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    _make_test_image(input_dir / "img_a.png", h=16, w=20)
+    model_cfg, bounds = load_model_config("configs/model/debug_smoke.yaml")
+    model = HybridLensCorrectionModel(config=model_cfg, param_bounds=bounds)
+
+    ckpt_path = tmp_path / "model.pt"
+    torch.save({"model": model.state_dict(), "epoch": 0, "global_step": 0}, ckpt_path)
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "infer_test.py"),
+        str(input_dir),
+        str(output_dir),
+        "--checkpoint-id",
+        "ckpt_model_path_001",
+        "--checkpoint-path",
+        str(ckpt_path),
+        "--model-config",
+        "configs/model/debug_smoke.yaml",
+        "--device",
+        "cpu",
+    ]
+    env = os.environ.copy()
+    env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    subprocess.run(cmd, cwd=str(ROOT), check=True, env=env)
+
+    metadata_path = output_dir / "run_metadata.json"
+    data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert data["checkpoint_id"] == "ckpt_model_path_001"
+    assert data["model_source"] == "checkpoint"
+    assert data["checkpoint_path"] == str(ckpt_path)
+    assert data["processed"] == 1
 
 
 def _run_all_with_tmpdir() -> None:
