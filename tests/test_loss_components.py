@@ -96,3 +96,5 @@ def test_composite_loss_stage_behavior() -> None:
     assert comps2["flow_tv"].item() >= 0.0
     assert comps2["flow_mag"].item() >= 0.0
     assert comps2["jacobian"].item() >= 0.0
+    assert "flow_tv_weighted" in comps2
+    assert "pixel_weighted" in comps2

@@ -34,6 +34,7 @@ def test_hybrid_model_output_shapes_bounds_and_init_behavior() -> None:
     out = model(image)
 
     assert "params" in out
+    assert "params_raw" in out
     assert "residual_flow_lowres" in out
     assert "residual_flow_fullres" in out
     assert "debug_stats" in out

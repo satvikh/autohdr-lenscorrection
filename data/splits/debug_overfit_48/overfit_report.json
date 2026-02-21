@@ -1,0 +1,11 @@
+{
+  "data_root": "automatic-lens-correction\\lens-correction-train-cleaned",
+  "out_dir": "data\\splits\\debug_overfit_48",
+  "num_pairs_requested": 48,
+  "num_pairs_written": 48,
+  "train_csv": "data\\splits\\debug_overfit_48\\train_split.csv",
+  "val_csv": "data\\splits\\debug_overfit_48\\val_split.csv",
+  "seed": 123,
+  "shuffle": false,
+  "note": "train and val intentionally identical for micro-overfit debug"
+}

@@ -28,6 +28,8 @@ def test_train_config_loader_parses_proxy_fields() -> None:
     assert extra["warp_backend"] in {"person1", "mock"}
     assert engine_cfg.best_metric_name == "total"
     assert engine_cfg.best_metric_mode == "min"
+    assert engine_cfg.debug_instrumentation is False
+    assert engine_cfg.debug_probe_enabled is False
 
 
 def test_train_config_loader_rejects_invalid_best_metric_mode(tmp_path) -> None:
@@ -83,4 +85,23 @@ def test_train_config_loader_rejects_invalid_warp_backend(tmp_path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="warp_backend"):
+        _ = load_train_config(p)
+
+
+def test_train_config_loader_rejects_invalid_debug_precision(tmp_path) -> None:
+    p = tmp_path / "bad_debug_precision.yaml"
+    p.write_text(
+        "\n".join(
+            [
+                "run_name: bad",
+                "stage: stage1_param_only",
+                "warp_backend: person1",
+                "debug_metric_precision: 0",
+                "optimizer: {lr: 0.0001, weight_decay: 0.0, betas: [0.9, 0.999]}",
+                "scheduler: {name: none}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="debug_metric_precision"):
         _ = load_train_config(p)

@@ -170,6 +170,18 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         residual_warn_abs_max_px=float(raw.get("residual_warn_abs_max_px", 20.0)),
         best_metric_name=best_metric_name,
         best_metric_mode=best_metric_mode,
+        debug_instrumentation=bool(raw.get("debug_instrumentation", False)),
+        debug_metric_precision=int(raw.get("debug_metric_precision", 4)),
+        debug_log_sample_ids=bool(raw.get("debug_log_sample_ids", False)),
+        debug_param_update_interval=int(raw.get("debug_param_update_interval", 0)),
+        debug_perf_enabled=bool(raw.get("debug_perf_enabled", False)),
+        debug_perf_interval=int(raw.get("debug_perf_interval", 0)),
+        debug_probe_enabled=bool(raw.get("debug_probe_enabled", False)),
+        debug_probe_max_samples=int(raw.get("debug_probe_max_samples", 8)),
+        debug_residual_inactive_threshold_px=float(raw.get("debug_residual_inactive_threshold_px", 1e-5)),
+        debug_residual_inactive_patience=int(raw.get("debug_residual_inactive_patience", 20)),
+        debug_zero_grad_threshold=float(raw.get("debug_zero_grad_threshold", 1e-12)),
+        debug_zero_param_delta_threshold=float(raw.get("debug_zero_param_delta_threshold", 1e-12)),
     )
     if engine.epochs < 1:
         raise ValueError(f"train.epochs must be >= 1, got {engine.epochs}")
@@ -183,6 +195,16 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         _assert_non_negative("train.grad_clip_norm", float(engine.grad_clip_norm))
     _assert_non_negative("train.param_saturation_warn_threshold", engine.param_saturation_warn_threshold)
     _assert_non_negative("train.residual_warn_abs_max_px", engine.residual_warn_abs_max_px)
+    _assert_positive("train.debug_metric_precision", float(engine.debug_metric_precision))
+    _assert_non_negative("train.debug_param_update_interval", float(engine.debug_param_update_interval))
+    _assert_non_negative("train.debug_perf_interval", float(engine.debug_perf_interval))
+    _assert_non_negative("train.debug_probe_max_samples", float(engine.debug_probe_max_samples))
+    _assert_non_negative(
+        "train.debug_residual_inactive_threshold_px", float(engine.debug_residual_inactive_threshold_px)
+    )
+    _assert_positive("train.debug_residual_inactive_patience", float(engine.debug_residual_inactive_patience))
+    _assert_non_negative("train.debug_zero_grad_threshold", float(engine.debug_zero_grad_threshold))
+    _assert_non_negative("train.debug_zero_param_delta_threshold", float(engine.debug_zero_param_delta_threshold))
 
     optim_raw = raw.get("optimizer", {})
     if not isinstance(optim_raw, dict):

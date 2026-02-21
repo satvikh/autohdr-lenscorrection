@@ -107,17 +107,25 @@ class CompositeLoss(nn.Module):
             "flow_mag": flow_mag,
             "flow_curv": flow_curv,
             "jacobian": jac,
+            "pixel_weighted": self.config.pixel_weight * pix,
+            "ssim_weighted": self.config.ssim_weight * ssim,
+            "edge_weighted": self.config.edge_weight * edge,
+            "grad_orient_weighted": self.config.grad_orient_weight * grad,
+            "flow_tv_weighted": self.config.flow_tv_weight * flow_tv,
+            "flow_mag_weighted": self.config.flow_mag_weight * flow_mag,
+            "flow_curv_weighted": self.config.flow_curv_weight * flow_curv,
+            "jacobian_weighted": self.config.jacobian_weight * jac,
         }
 
         total = (
-            (self.config.pixel_weight * pix)
-            + (self.config.ssim_weight * ssim)
-            + (self.config.edge_weight * edge)
-            + (self.config.grad_orient_weight * grad)
-            + (self.config.flow_tv_weight * flow_tv)
-            + (self.config.flow_mag_weight * flow_mag)
-            + (self.config.flow_curv_weight * flow_curv)
-            + (self.config.jacobian_weight * jac)
+            components["pixel_weighted"]
+            + components["ssim_weighted"]
+            + components["edge_weighted"]
+            + components["grad_orient_weighted"]
+            + components["flow_tv_weighted"]
+            + components["flow_mag_weighted"]
+            + components["flow_curv_weighted"]
+            + components["jacobian_weighted"]
         )
 
         components["total"] = total
