@@ -1,147 +1,168 @@
-# Person 2 Status (Model + Losses + Training)
+# Person 2 Final Status (Model + Losses + Training)
 
-## 1) Current State in Person 2 Scope
-Implemented modules:
+## 1) Module Map (Person 2 Scope)
 
-### `src/models/*`
-- `src/models/coord_channels.py`
-- `src/models/backbones.py`
-- `src/models/heads_parametric.py`
-- `src/models/heads_residual.py`
-- `src/models/hybrid_model.py`
-- `src/models/__init__.py`
+### Models (`src/models/*`)
+- `coord_channels.py`: appends x/y/r coordinate channels for arbitrary `H/W`.
+- `backbones.py`: `tiny`, `resnet34`, `resnet50` feature backbones.
+- `heads_parametric.py`: bounded global parameter head with near-identity init.
+- `heads_residual.py`: residual low-res flow head (`tanh * max_disp`, zero-init final conv).
+- `hybrid_model.py`: unified model forward returning params + residual outputs + debug stats.
 
-### `src/losses/*`
-- `src/losses/pixel.py`
-- `src/losses/ssim_loss.py`
-- `src/losses/gradients.py`
-- `src/losses/flow_regularizers.py`
-- `src/losses/jacobian_loss.py`
-- `src/losses/composite.py`
-- `src/losses/__init__.py`
+### Losses (`src/losses/*`)
+- `pixel.py`: L1 / Charbonnier.
+- `ssim_loss.py`: SSIM loss with finite guards.
+- `gradients.py`: Sobel edge + gradient orientation losses with multiscale helper.
+- `flow_regularizers.py`: TV / magnitude / curvature flow regularizers.
+- `jacobian_loss.py`: Jacobian foldover penalty hook.
+- `composite.py`: stage-aware weighted composite loss and component dictionary.
 
-### `src/train/*`
-- `src/train/protocols.py`
-- `src/train/warp_backends.py`
-- `src/train/amp_utils.py`
-- `src/train/optim.py`
-- `src/train/checkpointing.py`
-- `src/train/logging_utils.py`
-- `src/train/stage_configs.py`
-- `src/train/train_step.py`
-- `src/train/engine.py`
-- `src/train/__init__.py`
+### Training (`src/train/*`)
+- `protocols.py`: `WarpBackend` and `ProxyScorer` contracts.
+- `warp_backends.py`: `Person1GeometryWarpBackend` + `MockWarpBackend`.
+- `train_step.py`: train/eval step, stage gating, loss/warp contract checks, diagnostics.
+- `engine.py`: loops, AMP/scaler, scheduler stepping, guardrails, checkpointing, logging.
+- `optim.py`: AdamW + `cosine` / `onecycle` / `none` scheduler factory.
+- `checkpointing.py`: save/load model + optimizer + scheduler + scaler state.
+- `config_loader.py`: typed YAML parsing + schema validation.
+- `proxy_hooks.py`: optional proxy scorer integration with resilient fallback.
+- `debug_dump.py`: optional bounded image debug dump.
 
-### `configs/*` in Person 2 ownership
-- `configs/model/debug_smoke.yaml`
-- `configs/model/resnet34_baseline.yaml`
-- `configs/loss/debug_smoke.yaml`
-- `configs/loss/stage1_param_only.yaml`
-- `configs/loss/stage2_hybrid.yaml`
-- `configs/loss/stage3_finetune.yaml`
-- `configs/train/debug_smoke.yaml`
-- `configs/train/stage1_param_only.yaml`
-- `configs/train/stage2_hybrid.yaml`
-- `configs/train/stage3_finetune.yaml`
+### Stage Scripts (`scripts/*`)
+- `train_stage1.py`: stage1 train/validate entrypoint.
+- `train_stage2.py`: stage2 entrypoint (default `--init-from outputs/runs/stage1_param_only/best.pt`).
+- `train_stage3.py`: stage3 entrypoint (default `--init-from outputs/runs/stage2_hybrid/best.pt`).
+- `_train_common.py`: shared CLI, fail-fast checks, loader wiring, resume/init/validate-only.
 
-### Person 2 tests
+### Configs
+- Model: `configs/model/debug_smoke.yaml`, `configs/model/resnet34_baseline.yaml`
+- Loss: `configs/loss/debug_smoke.yaml`, `configs/loss/stage1_param_only.yaml`, `configs/loss/stage2_hybrid.yaml`, `configs/loss/stage3_finetune.yaml`
+- Train: `configs/train/debug_smoke.yaml`, `configs/train/stage1_param_only.yaml`, `configs/train/stage2_hybrid.yaml`, `configs/train/stage3_finetune.yaml`
+
+### Tests (Person 2-focused)
 - `tests/test_model_shapes.py`
 - `tests/test_loss_components.py`
 - `tests/test_train_step_smoke.py`
+- `tests/test_train_config_parsing.py`
+- `tests/test_train_integration_hooks.py`
 
-## 2) Completed Functionality
-- Coordinate channels (x, y, r) with explicit shape/range behavior.
-- Backbone wrappers:
-  - `resnet34`, `resnet50` via torchvision (when available)
-  - `tiny` fallback backbone for smoke tests.
-- Parametric head:
-  - bounded outputs for global params
-  - configurable bounds
-  - near-identity safe initialization.
-- Residual flow head:
-  - FPN-like multi-scale decoder
-  - low-res 2-channel flow output
-  - `tanh * max_disp`
-  - final conv zero-init.
-- Hybrid model wrapper:
-  - outputs `params`, `residual_flow`, `residual_flow_lowres`, `residual_flow_fullres`, `debug_stats`
-  - optional `pred_image` via injected warp backend.
-- Loss stack:
-  - L1/Charbonnier
-  - SSIM
-  - Sobel edge magnitude
-  - gradient orientation cosine
-  - flow TV/magnitude/curvature regularizers
-  - differentiable Jacobian foldover penalty
-  - stage-aware `CompositeLoss` with component dictionary.
-- Training stack:
-  - dependency-injected warp backend protocol
-  - mock backend and Person1 geometry backend adapter
-  - modular train/eval step
-  - optimizer/scheduler factories
-  - AMP helpers
-  - gradient clipping
-  - checkpoint save/load
-  - training engine with train/val loops and checkpointing.
-- Stage toggles implemented:
-  - `stage1_param_only`
-  - `stage2_hybrid`
-  - `stage3_finetune`.
+## 2) Integration Status
 
-## 3) Stubbed / Awaiting External Integration
-- Person 3 data pipeline and dataloaders are not integrated yet; engine currently expects iterable batches with contract keys.
-- Person 3 proxy scorer is not wired into validation loop yet; current validation reports loss components.
-- Training entry scripts (`scripts/train_stage1.py`, `scripts/train_stage2.py`, `scripts/train_stage3.py`) are still pending in Person 2 lane.
+### Person 1 (geometry/inference): **Confirmed**
+Integrated through `src/train/warp_backends.py` using:
+- `build_parametric_grid`
+- `upsample_residual_flow`
+- `fuse_grids`
+- `warp_image`
+- `jacobian_stats`
+- `evaluate_safety` (diagnostic report)
 
-## 4) Interfaces Expected from Person 1 (Warp Backend)
-Primary geometry API (already available and used by adapter backend):
-- `build_parametric_grid(params, height, width, align_corners, device, dtype) -> Tensor[B,H,W,2]`
-- `upsample_residual_flow(flow_lr, target_h, target_w, align_corners) -> Tensor[B,H,W,2]`
-- `fuse_grids(param_grid, residual_flow) -> Tensor[B,H,W,2]`
-- `warp_image(image, grid, mode, padding_mode, align_corners) -> Tensor[B,C,H,W]`
-- `jacobian_stats(grid) -> dict`
+Train-time warp contract now enforced in Person 2 step:
+- required: `pred_image`, `warp_stats`
+- required for stage2/3 Jacobian penalty: `final_grid`
+- optional: `param_grid`, `residual_flow_fullres_norm`
 
-Expected behavior:
-- BHWC grid convention, `(x, y)` ordering.
-- `align_corners=True` globally.
-- backward warp only.
+Jacobian semantics used in diagnostics:
+- `negative_det_pct` higher is worse (foldovers).
+- `det_min` / `det_p01` lower is worse.
+- `oob_ratio` higher is worse.
 
-Person 2 adapter implementation:
-- `src/train/warp_backends.py::Person1GeometryWarpBackend`
+### Person 3 (data/proxy): **Pending in current repo state**
+- `src/data/*` not present.
+- `src/metrics/*` not present.
+- `src/qa/*` not present.
 
-## 5) Interfaces Expected from Person 3 (Proxy Scorer)
-Expected entry point contract:
-- `compute_proxy_score(pred, gt, config) -> dict`
+Hooks are ready and optional:
+- External loaders via `--loader-module` + `--loader-fn`.
+- Proxy scorer via train config (`proxy_enabled`, `proxy_module_path`, `proxy_function_name`).
+- If scorer import fails, training remains non-fatal and logs warning.
 
-Expected return schema:
-- `total_score: float`
-- `sub_scores: {edge, line, grad, ssim, mae}`
-- `flags: {hard_fail: bool, reasons: list[str]}`
+## 3) Guardrails and Reliability
+- Non-finite loss fail-fast with clear error (`fail_on_nonfinite_loss`).
+- Parameter saturation warning with per-parameter names and fractions.
+- Residual magnitude warning with actual observed values.
+- CPU fallback if requested CUDA/MPS unavailable.
+- Interrupt checkpoint: `interrupted.pt`.
+- Config validation for stage/warp/scheduler names and numeric ranges.
+- Stage/loss alignment checks in `_train_common.py`.
 
-Planned integration point:
-- validation hook inside `src/train/engine.py` (add optional proxy callback once Person 3 module is available).
+## 4) Run Commands (Copy-Paste)
 
-## 6) Commands for Smoke Tests / Training
-### Run Person 2 tests only
+### A) Synthetic smoke train
 ```bash
-# Windows/Anaconda OpenMP workaround (if needed):
-# set KMP_DUPLICATE_LIB_OK=TRUE
-pytest -q tests/test_model_shapes.py tests/test_loss_components.py tests/test_train_step_smoke.py
+python scripts/train_stage1.py \
+  --model-config configs/model/debug_smoke.yaml \
+  --loss-config configs/loss/debug_smoke.yaml \
+  --train-config configs/train/debug_smoke.yaml \
+  --use-synthetic
 ```
 
-### Run all tests
+### B) Stage1 real run
 ```bash
-# Windows/Anaconda OpenMP workaround (if needed):
-# set KMP_DUPLICATE_LIB_OK=TRUE
-pytest -q
+python scripts/train_stage1.py \
+  --model-config configs/model/resnet34_baseline.yaml \
+  --loss-config configs/loss/stage1_param_only.yaml \
+  --train-config configs/train/stage1_param_only.yaml \
+  --loader-module <person3_data_module> \
+  --loader-fn build_train_val_loaders
 ```
 
-### Suggested smoke config usage (after stage scripts are added)
+### C) Stage2 real run
 ```bash
-python scripts/train_stage1.py --model-config configs/model/debug_smoke.yaml --loss-config configs/loss/debug_smoke.yaml --train-config configs/train/debug_smoke.yaml
+python scripts/train_stage2.py \
+  --model-config configs/model/resnet34_baseline.yaml \
+  --loss-config configs/loss/stage2_hybrid.yaml \
+  --train-config configs/train/stage2_hybrid.yaml \
+  --loader-module <person3_data_module> \
+  --loader-fn build_train_val_loaders
 ```
 
-## 7) Immediate Next Steps in Person 2 Lane
-1. Add stage training entry scripts under `scripts/train_stage*.py` to load YAML configs and run `TrainerEngine`.
-2. Add optional validation callback interface for Person 3 proxy scorer.
-3. Add metric/log export helpers for easier submission calibration with Person 3.
+### D) Stage3 real run
+```bash
+python scripts/train_stage3.py \
+  --model-config configs/model/resnet34_baseline.yaml \
+  --loss-config configs/loss/stage3_finetune.yaml \
+  --train-config configs/train/stage3_finetune.yaml \
+  --loader-module <person3_data_module> \
+  --loader-fn build_train_val_loaders
+```
+
+### E) Resume example
+```bash
+python scripts/train_stage2.py \
+  --resume-from outputs/runs/stage2_hybrid/last.pt \
+  --loader-module <person3_data_module> \
+  --loader-fn build_train_val_loaders
+```
+
+### F) Validate-only example
+```bash
+python scripts/train_stage2.py \
+  --validate-only \
+  --resume-from outputs/runs/stage2_hybrid/best.pt \
+  --loader-module <person3_data_module> \
+  --loader-fn build_train_val_loaders
+```
+
+## 5) Windows OpenMP Note
+- In some Windows/Anaconda setups, you may hit duplicate OpenMP runtime errors.
+- Workaround for local runs:
+  - PowerShell: `$env:KMP_DUPLICATE_LIB_OK='TRUE'`
+- Do not hardcode this in source; treat as environment-only workaround.
+
+## 6) Top Priority Tuning Knobs
+1. Per-stage `optimizer.lr` (largest stability/quality lever).
+2. `grad_clip_norm` (reduce if unstable; raise if over-constrained).
+3. Stage2/3 `jacobian_weight`, `flow_tv_weight`, `flow_mag_weight`.
+4. `residual_max_disp` (model config) vs residual regularizer strengths.
+5. Stage3 image-term balance: `edge_weight` / `grad_orient_weight` / `pixel_weight`.
+
+## 7) Known Risks and Quick Detection
+- **Risk:** parameter saturation at bounds.
+  - Detect: `param_sat_frac_*` and `param_sat_frac_max` logs.
+- **Risk:** unstable residual branch.
+  - Detect: residual magnitude warnings + `residual_*` diagnostics.
+- **Risk:** geometry foldovers.
+  - Detect: `warp_negative_det_pct`, `warp_det_min`, `warp_oob_ratio`, `warp_safety_safe`.
+- **Risk:** missing Person 3 runtime modules.
+  - Detect: loader import errors / unresolved proxy warning during startup.

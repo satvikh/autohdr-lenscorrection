@@ -25,3 +25,6 @@ venv/
 lens-correction-train-cleaned/
 lens-correction-train-cleaned.zip
 outputs/
+
+automatic-lens-correction/
+automatic-lens-correction.zip
