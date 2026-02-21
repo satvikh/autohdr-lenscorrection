@@ -12,7 +12,7 @@ device: cuda
 epochs: 20
 max_steps_per_epoch:
 max_val_steps:
-log_interval: 50
+log_interval: 1
 amp_enabled: true
 grad_clip_norm: 1.0
 checkpoint_dir: outputs/runs
