@@ -1,6 +1,15 @@
 # Fast smoke run config
 run_name: debug_smoke
 stage: stage1_param_only
+warp_backend: person1
+
+# Synthetic fallback settings used by stage scripts when data loader is unavailable
+synthetic_train_steps: 4
+synthetic_val_steps: 2
+synthetic_batch_size: 2
+synthetic_height: 96
+synthetic_width: 128
+
 device: cpu
 epochs: 1
 max_steps_per_epoch: 2
@@ -9,6 +18,21 @@ log_interval: 1
 amp_enabled: false
 grad_clip_norm: 1.0
 checkpoint_dir: outputs/runs
+
+# Optional proxy hook (Person 3)
+proxy_enabled: false
+proxy_module_path: src.metrics.proxy_score
+proxy_function_name: compute_proxy_score
+proxy_config: {}
+
+# Optional debug image dump
+debug_dump_dir:
+debug_dump_max_images: 0
+
+# Safety guardrails
+fail_on_nonfinite_loss: true
+param_saturation_warn_threshold: 0.90
+residual_warn_abs_max_px: 40.0
 
 optimizer:
   lr: 0.0003
