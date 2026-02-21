@@ -1,0 +1,19 @@
+run_name: stage1_param_only
+stage: stage1_param_only
+device: cuda
+epochs: 20
+max_steps_per_epoch:
+max_val_steps:
+log_interval: 50
+amp_enabled: true
+grad_clip_norm: 1.0
+checkpoint_dir: outputs/runs
+
+optimizer:
+  lr: 0.0002
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  min_lr: 0.000001
