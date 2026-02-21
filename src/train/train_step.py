@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import time
 from typing import Any
 
 import torch
@@ -8,6 +10,7 @@ from torch import Tensor
 from torch import nn
 from torch.optim import Optimizer
 
+from src.geometry.coords import make_identity_grid
 from src.losses.composite import CompositeLoss
 from src.train.amp_utils import autocast_context
 from src.train.protocols import WarpBackend
@@ -36,6 +39,93 @@ def _batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[str, A
 
 def _tensor_scalar(value: Tensor) -> float:
     return float(value.detach().item())
+
+
+def _sync_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _group_name(param_name: str) -> str:
+    if param_name.startswith("backbone."):
+        return "backbone"
+    if param_name.startswith("param_head."):
+        return "param_head"
+    if param_name.startswith("residual_head."):
+        return "residual_head"
+    return "other"
+
+
+def _group_norm_from_tensors(values_by_name: dict[str, Tensor]) -> dict[str, float]:
+    sq_sum: dict[str, float] = {"backbone": 0.0, "param_head": 0.0, "residual_head": 0.0, "other": 0.0}
+    for name, value in values_by_name.items():
+        group = _group_name(name)
+        safe_value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+        norm = float(torch.linalg.vector_norm(safe_value).item())
+        sq_sum[group] += norm * norm
+    return {f"{k}": math.sqrt(v) for k, v in sq_sum.items()}
+
+
+def _collect_group_grad_norms(model: nn.Module) -> dict[str, float]:
+    grads: dict[str, Tensor] = {}
+    nonfinite: dict[str, float] = {"backbone": 0.0, "param_head": 0.0, "residual_head": 0.0, "other": 0.0}
+    for name, p in model.named_parameters():
+        if not p.requires_grad or p.grad is None:
+            continue
+        grad = p.grad.detach()
+        grads[name] = grad
+        if not torch.isfinite(grad).all():
+            nonfinite[_group_name(name)] += 1.0
+    norms = _group_norm_from_tensors(grads)
+    return {
+        "grad_norm_backbone": norms["backbone"],
+        "grad_norm_param_head": norms["param_head"],
+        "grad_norm_residual_head": norms["residual_head"],
+        "grad_norm_other": norms["other"],
+        "grad_nonfinite_count_backbone": nonfinite["backbone"],
+        "grad_nonfinite_count_param_head": nonfinite["param_head"],
+        "grad_nonfinite_count_residual_head": nonfinite["residual_head"],
+        "grad_nonfinite_count_other": nonfinite["other"],
+    }
+
+
+def _collect_group_param_deltas(model: nn.Module, before: dict[str, Tensor]) -> dict[str, float]:
+    deltas: dict[str, Tensor] = {}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        prev = before.get(name)
+        if prev is None:
+            continue
+        deltas[name] = p.detach() - prev
+    norms = _group_norm_from_tensors(deltas)
+    return {
+        "param_delta_backbone": norms["backbone"],
+        "param_delta_param_head": norms["param_head"],
+        "param_delta_residual_head": norms["residual_head"],
+        "param_delta_other": norms["other"],
+    }
+
+
+def _norm_delta_bhwc_to_px_stats(delta_bhwc: Tensor) -> dict[str, float]:
+    if delta_bhwc.ndim != 4 or delta_bhwc.shape[-1] != 2:
+        raise ValueError(f"Expected BHWC normalized delta with last dim 2, got {tuple(delta_bhwc.shape)}")
+    h = int(delta_bhwc.shape[1])
+    w = int(delta_bhwc.shape[2])
+    sx = (w - 1) * 0.5 if w > 1 else 0.0
+    sy = (h - 1) * 0.5 if h > 1 else 0.0
+
+    dx = delta_bhwc[..., 0] * sx
+    dy = delta_bhwc[..., 1] * sy
+    mag = torch.sqrt(dx * dx + dy * dy)
+    return {
+        "mean": _tensor_scalar(mag.mean()),
+        "max": _tensor_scalar(mag.amax()),
+        "std": _tensor_scalar(mag.std(unbiased=False)),
+        "dx_mean": _tensor_scalar(dx.mean()),
+        "dy_mean": _tensor_scalar(dy.mean()),
+        "abs_mean": _tensor_scalar(mag.abs().mean()),
+    }
 
 
 def _extract_param_bounds_and_names(model: nn.Module, n_params: int) -> tuple[list[str], list[tuple[float, float]]]:
@@ -82,9 +172,18 @@ def _extract_model_diagnostics(raw_outputs: dict[str, Any], model: nn.Module) ->
     diag: dict[str, float] = {}
 
     params = raw_outputs.get("params")
+    params_raw = raw_outputs.get("params_raw")
+    if torch.is_tensor(params_raw):
+        diag["params_raw_mean"] = _tensor_scalar(params_raw.mean())
+        diag["params_raw_abs_mean"] = _tensor_scalar(params_raw.abs().mean())
+        diag["params_raw_abs_max"] = _tensor_scalar(params_raw.abs().amax())
+        diag["params_raw_std"] = _tensor_scalar(params_raw.std(unbiased=False))
+
     if torch.is_tensor(params):
+        diag["params_mean"] = _tensor_scalar(params.mean())
         diag["params_abs_mean"] = _tensor_scalar(params.abs().mean())
         diag["params_abs_max"] = _tensor_scalar(params.abs().amax())
+        diag["params_std"] = _tensor_scalar(params.std(unbiased=False))
         if params.shape[1] >= 1:
             diag["param_k1_mean"] = _tensor_scalar(params[:, 0].mean())
         if params.shape[1] >= 2:
@@ -105,12 +204,21 @@ def _extract_model_diagnostics(raw_outputs: dict[str, Any], model: nn.Module) ->
             sat_max = max(sat_max, sat_frac)
         diag["param_sat_frac_max"] = sat_max
 
-    residual = raw_outputs.get("residual_flow_lowres")
-    if residual is None:
-        residual = raw_outputs.get("residual_flow")
-    if torch.is_tensor(residual):
-        diag["residual_lowres_abs_mean_px"] = _tensor_scalar(residual.abs().mean())
-        diag["residual_lowres_abs_max_px"] = _tensor_scalar(residual.abs().amax())
+    residual_low = raw_outputs.get("residual_flow_lowres")
+    if residual_low is None:
+        residual_low = raw_outputs.get("residual_flow")
+    if torch.is_tensor(residual_low):
+        diag["residual_lowres_mean_px"] = _tensor_scalar(residual_low.mean())
+        diag["residual_lowres_std_px"] = _tensor_scalar(residual_low.std(unbiased=False))
+        diag["residual_lowres_abs_mean_px"] = _tensor_scalar(residual_low.abs().mean())
+        diag["residual_lowres_abs_max_px"] = _tensor_scalar(residual_low.abs().amax())
+
+    residual_full = raw_outputs.get("residual_flow_fullres")
+    if torch.is_tensor(residual_full):
+        diag["residual_fullres_mean_px"] = _tensor_scalar(residual_full.mean())
+        diag["residual_fullres_std_px"] = _tensor_scalar(residual_full.std(unbiased=False))
+        diag["residual_fullres_abs_mean_px"] = _tensor_scalar(residual_full.abs().mean())
+        diag["residual_fullres_abs_max_px"] = _tensor_scalar(residual_full.abs().amax())
 
     debug_stats = raw_outputs.get("debug_stats")
     if isinstance(debug_stats, dict):
@@ -138,6 +246,42 @@ def _extract_warp_diagnostics(warp_outputs: dict[str, Any]) -> dict[str, float]:
     if torch.is_tensor(residual_norm):
         diag["residual_fullres_norm_abs_mean"] = _tensor_scalar(residual_norm.abs().mean())
         diag["residual_fullres_norm_abs_max"] = _tensor_scalar(residual_norm.abs().amax())
+        residual_stats = _norm_delta_bhwc_to_px_stats(residual_norm)
+        for k, v in residual_stats.items():
+            diag[f"residual_fullres_norm_disp_px_{k}"] = v
+
+    param_grid = warp_outputs.get("param_grid")
+    final_grid = warp_outputs.get("final_grid")
+    if torch.is_tensor(param_grid) and param_grid.ndim == 4 and param_grid.shape[-1] == 2:
+        b, h, w, _ = param_grid.shape
+        identity = make_identity_grid(
+            int(b),
+            int(h),
+            int(w),
+            device=param_grid.device,
+            dtype=param_grid.dtype,
+        )
+        param_delta = param_grid - identity
+        pstats = _norm_delta_bhwc_to_px_stats(param_delta)
+        for k, v in pstats.items():
+            diag[f"param_grid_disp_px_{k}"] = v
+
+        if torch.is_tensor(final_grid) and final_grid.shape == param_grid.shape:
+            final_delta = final_grid - identity
+            fstats = _norm_delta_bhwc_to_px_stats(final_delta)
+            for k, v in fstats.items():
+                diag[f"final_grid_disp_px_{k}"] = v
+
+            residual_delta = final_grid - param_grid
+            rstats = _norm_delta_bhwc_to_px_stats(residual_delta)
+            for k, v in rstats.items():
+                diag[f"residual_contrib_px_{k}"] = v
+
+            denom = float(diag.get("param_grid_disp_px_mean", 0.0))
+            if denom > 1e-12:
+                diag["residual_to_param_disp_ratio_mean"] = float(rstats["mean"] / denom)
+            else:
+                diag["residual_to_param_disp_ratio_mean"] = 0.0
 
     return diag
 
@@ -272,10 +416,19 @@ def run_train_step(
     amp_enabled: bool,
     grad_clip_norm: float | None,
     device: torch.device,
+    debug_instrumentation: bool = False,
 ) -> TrainStepResult:
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    params_before: dict[str, Tensor] = {}
+    if debug_instrumentation:
+        params_before = {
+            name: p.detach().clone()
+            for name, p in model.named_parameters()
+            if p.requires_grad
+        }
 
+    forward_start = time.perf_counter()
     step_out = forward_loss_step(
         model=model,
         batch=batch,
@@ -286,18 +439,65 @@ def run_train_step(
         device=device,
     )
 
+    if debug_instrumentation:
+        _sync_if_cuda(device)
+    forward_end = time.perf_counter()
+
+    optim_step_skipped = False
+
+    backward_start = time.perf_counter()
     if scaler is not None and amp_enabled:
+        prev_scale = float(scaler.get_scale())
         scaler.scale(step_out.total_loss).backward()
         if grad_clip_norm is not None:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip_norm))
+        if debug_instrumentation:
+            _sync_if_cuda(device)
+        backward_end = time.perf_counter()
+
+        step_start = time.perf_counter()
         scaler.step(optimizer)
         scaler.update()
+        if debug_instrumentation:
+            _sync_if_cuda(device)
+        step_end = time.perf_counter()
+
+        new_scale = float(scaler.get_scale())
+        optim_step_skipped = new_scale < prev_scale
     else:
         step_out.total_loss.backward()
         if grad_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip_norm))
+        if debug_instrumentation:
+            _sync_if_cuda(device)
+        backward_end = time.perf_counter()
+
+        step_start = time.perf_counter()
         optimizer.step()
+        if debug_instrumentation:
+            _sync_if_cuda(device)
+        step_end = time.perf_counter()
+
+    if debug_instrumentation:
+        step_out.diagnostics["timing_forward_ms"] = (forward_end - forward_start) * 1000.0
+        step_out.diagnostics["timing_backward_ms"] = (backward_end - backward_start) * 1000.0
+        step_out.diagnostics["timing_optim_step_ms"] = (step_end - step_start) * 1000.0
+    step_out.diagnostics["optim_step_skipped"] = 1.0 if optim_step_skipped else 0.0
+
+    if debug_instrumentation:
+        step_out.diagnostics.update(_collect_group_grad_norms(model))
+    if debug_instrumentation and params_before:
+        step_out.diagnostics.update(_collect_group_param_deltas(model, params_before))
+    elif debug_instrumentation:
+        step_out.diagnostics.update(
+            {
+                "param_delta_backbone": 0.0,
+                "param_delta_param_head": 0.0,
+                "param_delta_residual_head": 0.0,
+                "param_delta_other": 0.0,
+            }
+        )
 
     return step_out
 

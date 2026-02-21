@@ -96,11 +96,13 @@ class HybridLensCorrectionModel(nn.Module):
         )
 
     @staticmethod
-    def _debug_stats(params: Tensor, residual_flow_lowres: Tensor) -> dict[str, Tensor]:
+    def _debug_stats(params_raw: Tensor, params_bounded: Tensor, residual_flow_lowres: Tensor) -> dict[str, Tensor]:
         with torch.no_grad():
             stats = {
-                "params_abs_mean": params.abs().mean(),
-                "params_abs_max": params.abs().amax(),
+                "params_raw_abs_mean": params_raw.abs().mean(),
+                "params_raw_abs_max": params_raw.abs().amax(),
+                "params_abs_mean": params_bounded.abs().mean(),
+                "params_abs_max": params_bounded.abs().amax(),
                 "residual_abs_mean_px": residual_flow_lowres.abs().mean(),
                 "residual_abs_max_px": residual_flow_lowres.abs().amax(),
             }
@@ -115,7 +117,8 @@ class HybridLensCorrectionModel(nn.Module):
         x = self.coord_appender(image) if self.coord_appender is not None else image
         features = self.backbone(x)
 
-        params = self.param_head(features["layer4"])
+        params_raw = self.param_head.predict_raw(features["layer4"])
+        params = self.param_head.apply_bounds(params_raw)
         residual_flow_lowres = self.residual_head(features)
         residual_flow_fullres = F.interpolate(
             residual_flow_lowres,
@@ -126,10 +129,11 @@ class HybridLensCorrectionModel(nn.Module):
 
         outputs: dict[str, Any] = {
             "params": params,
+            "params_raw": params_raw,
             "residual_flow": residual_flow_lowres,
             "residual_flow_lowres": residual_flow_lowres,
             "residual_flow_fullres": residual_flow_fullres,
-            "debug_stats": self._debug_stats(params, residual_flow_lowres),
+            "debug_stats": self._debug_stats(params_raw, params, residual_flow_lowres),
         }
 
         want_pred = self.config.return_pred_image if return_pred_image is None else bool(return_pred_image)
