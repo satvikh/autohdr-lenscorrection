@@ -47,8 +47,13 @@ def ssim_index(
     num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
     den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
 
-    ssim_map = num / (den + eps)
-    return ssim_map.mean()
+    den = torch.clamp(den, min=eps)
+    ssim_map = num / den
+    ssim_map = torch.clamp(ssim_map, min=-1.0, max=1.0)
+    out = ssim_map.mean()
+    if not torch.isfinite(out):
+        raise RuntimeError("ssim_index produced non-finite value")
+    return out
 
 
 class SSIMLoss(nn.Module):

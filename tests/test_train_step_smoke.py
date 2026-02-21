@@ -7,11 +7,12 @@ import torch
 from src.losses.composite import CompositeLoss, config_for_stage
 from src.models.hybrid_model import HybridLensCorrectionModel, HybridModelConfig
 from src.train.checkpointing import load_checkpoint, save_checkpoint
+from src.train.config_loader import load_train_config
 from src.train.engine import EngineConfig, TrainerEngine
 from src.train.optim import OptimConfig, SchedulerConfig, create_optimizer, create_scheduler
 from src.train.stage_configs import get_stage_toggles
 from src.train.train_step import run_eval_step, run_train_step
-from src.train.warp_backends import MockWarpBackend
+from src.train.warp_backends import MockWarpBackend, Person1GeometryWarpBackend
 
 
 def _dummy_batch(batch: int = 2, h: int = 64, w: int = 64) -> dict[str, torch.Tensor]:
@@ -54,6 +55,7 @@ def test_train_step_smoke_updates_parameters() -> None:
     assert out.total_loss.item() > 0.0
     assert "total" in out.components
     assert out.pred_image.shape == batch["input_image"].shape
+    assert "param_sat_frac_max" in out.diagnostics
 
     after = [p.detach().clone() for p in model.parameters() if p.requires_grad]
     total_delta = torch.stack([(a - b).abs().mean() for a, b in zip(after, before)]).sum().item()
@@ -161,3 +163,155 @@ def test_trainer_engine_smoke(tmp_path: Path) -> None:
     assert "train_total" in metrics
     assert "val_total" in metrics
     assert (tmp_path / "runs" / "smoke_engine" / "last.pt").exists()
+
+
+def test_stage1_disables_residual_path() -> None:
+    class SpyBackend(MockWarpBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_residual_is_none: bool | None = None
+
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            self.last_residual_is_none = residual_flow_lowres is None
+            return super().warp(image, params, residual_flow_lowres)
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    backend = SpyBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    _ = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=backend,
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=False,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+    )
+    assert backend.last_residual_is_none is True
+
+
+def test_person1_geometry_backend_smoke() -> None:
+    device = torch.device("cpu")
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny")).to(device)
+    loss_fn = CompositeLoss(config_for_stage("stage2_hybrid"))
+    stage = get_stage_toggles("stage2_hybrid")
+    backend = Person1GeometryWarpBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    out = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=backend,
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=False,
+        grad_clip_norm=1.0,
+        device=device,
+    )
+    assert torch.isfinite(out.total_loss)
+    assert "warp_oob_ratio" in out.diagnostics
+    assert "warp_safety_safe" in out.diagnostics
+
+
+def test_train_config_loader_smoke() -> None:
+    engine, optim, sched, extra = load_train_config("configs/train/debug_smoke.yaml")
+    assert engine.epochs >= 1
+    assert optim.lr > 0.0
+    assert isinstance(sched.name, str)
+    assert extra["stage"] == "stage1_param_only"
+
+
+def test_train_step_raises_on_non_finite_loss() -> None:
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage2_hybrid"))
+    stage = get_stage_toggles("stage2_hybrid")
+    backend = MockWarpBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    batch = _dummy_batch()
+    batch["target_image"][0, 0, 0, 0] = float("nan")
+
+    try:
+        _ = run_train_step(
+            model=model,
+            batch=batch,
+            loss_fn=loss_fn,
+            warp_backend=backend,
+            stage=stage,
+            optimizer=optimizer,
+            scaler=None,
+            amp_enabled=False,
+            grad_clip_norm=1.0,
+            device=torch.device("cpu"),
+        )
+        assert False, "Expected FloatingPointError for non-finite loss."
+    except FloatingPointError:
+        pass
+
+
+def test_stage2_requires_final_grid_from_warp_backend() -> None:
+    class NoFinalGridBackend(MockWarpBackend):
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            out = super().warp(image, params, residual_flow_lowres)
+            out.pop("final_grid", None)
+            return out
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage2_hybrid"))
+    stage = get_stage_toggles("stage2_hybrid")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    try:
+        _ = run_train_step(
+            model=model,
+            batch=_dummy_batch(),
+            loss_fn=loss_fn,
+            warp_backend=NoFinalGridBackend(),
+            stage=stage,
+            optimizer=optimizer,
+            scaler=None,
+            amp_enabled=False,
+            grad_clip_norm=1.0,
+            device=torch.device("cpu"),
+        )
+        assert False, "Expected ValueError when final_grid is missing in stage2."
+    except ValueError as exc:
+        assert "final_grid" in str(exc)
+
+
+def test_warp_backend_requires_warp_stats_key() -> None:
+    class NoWarpStatsBackend(MockWarpBackend):
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            out = super().warp(image, params, residual_flow_lowres)
+            out.pop("warp_stats", None)
+            return out
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    try:
+        _ = run_train_step(
+            model=model,
+            batch=_dummy_batch(),
+            loss_fn=loss_fn,
+            warp_backend=NoWarpStatsBackend(),
+            stage=stage,
+            optimizer=optimizer,
+            scaler=None,
+            amp_enabled=False,
+            grad_clip_norm=1.0,
+            device=torch.device("cpu"),
+        )
+        assert False, "Expected ValueError when warp_stats is missing."
+    except ValueError as exc:
+        assert "warp_stats" in str(exc)

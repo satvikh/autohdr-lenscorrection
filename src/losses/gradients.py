@@ -91,10 +91,16 @@ def gradient_orientation_cosine_loss(
     base = 1.0 - cos
 
     if not weight_by_target_magnitude:
-        return base.mean()
+        out = base.mean()
+        if not torch.isfinite(out):
+            raise RuntimeError("gradient_orientation_cosine_loss produced non-finite value")
+        return out
 
     weights = tgt_norm / (tgt_norm.mean() + eps)
-    return (base * weights).mean()
+    out = (base * weights).mean()
+    if not torch.isfinite(out):
+        raise RuntimeError("gradient_orientation_cosine_loss produced non-finite value")
+    return out
 
 
 def resize_pair_explicit(pred: Tensor, target: Tensor, *, scale: float) -> tuple[Tensor, Tensor]:
