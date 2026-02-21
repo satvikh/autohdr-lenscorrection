@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -55,6 +56,10 @@ def main() -> None:
         return
 
     processed = 0
+    mode_counts: Counter[str] = Counter()
+    safety_fail_count = 0
+    reason_counts: Counter[str] = Counter()
+
     for image_path in images:
         output_tensor, metadata = predictor.predict(image_path)
         out_path = output_dir / f"{image_path.stem}.jpg"
@@ -63,11 +68,25 @@ def main() -> None:
         save_jpeg(output_tensor, out_path, expected_hw=(h, w))
 
         processed += 1
-        print(f"[{processed}/{total}] {image_path.name} -> {out_path.name} mode={metadata['mode_used']}")
+        mode = str(metadata.get("mode_used", "unknown"))
+        mode_counts[mode] += 1
+
+        safety = metadata.get("safety", {})
+        safe = bool(safety.get("safe", False))
+        if not safe:
+            safety_fail_count += 1
+            for reason in safety.get("reasons", []):
+                reason_counts[str(reason)] += 1
+
+        print(f"[{processed}/{total}] {image_path.name} -> {out_path.name} mode={mode} safe={safe}")
 
     print("Summary")
     print(f"- processed: {processed}")
-    print("- mode_used_counts: {'param_only': %d}" % processed)
+    print(f"- mode_used_counts: {dict(mode_counts)}")
+    print(f"- safety_failures: {safety_fail_count}")
+    print("- safety_reasons_top:")
+    for reason, count in reason_counts.most_common(5):
+        print(f"  - {reason}: {count}")
 
 
 if __name__ == "__main__":
