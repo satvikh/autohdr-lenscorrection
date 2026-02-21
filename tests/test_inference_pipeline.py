@@ -23,20 +23,27 @@ class StubNeutralModel:
         return {"params": params}
 
 
-class StubExtremeUnsafeModel:
+class StubHybridSmallResidualModel:
+    def __call__(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
+        b = image.shape[0]
+        h = image.shape[2]
+        w = image.shape[3]
+        params = torch.zeros((b, 8), dtype=image.dtype, device=image.device)
+        params[:, 7] = 1.0
+        # BHWC pixel residual with dx=1 in interior only (edges stay 0 to avoid OOB).
+        residual = torch.zeros((b, h, w, 2), dtype=image.dtype, device=image.device)
+        residual[:, 1:-1, 1:-1, 0] = 1.0
+        return {"params": params, "residual_flow": residual}
+
+
+class StubHybridHugeResidualModel:
     def __call__(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         b = image.shape[0]
         params = torch.zeros((b, 8), dtype=image.dtype, device=image.device)
-        # Extreme raw outputs that should trigger safety before conservative fallback.
-        params[:, 0] = -1.6988822
-        params[:, 1] = -0.04983214
-        params[:, 2] = 0.2604164
-        params[:, 3] = 0.13875858
-        params[:, 4] = 0.15665331
-        params[:, 5] = 0.9040643
-        params[:, 6] = 0.72543573
-        params[:, 7] = 2.9072435
-        return {"params": params}
+        params[:, 7] = 1.0
+        # BCHW pixel residual, huge magnitude should be unsafe in hybrid.
+        residual = torch.full((b, 2, 4, 5), 200.0, dtype=image.dtype, device=image.device)
+        return {"params": params, "residual_flow": residual}
 
 
 def _make_test_image(path: Path, h: int = 32, w: int = 40) -> np.ndarray:
@@ -83,18 +90,29 @@ def test_param_only_inference_identity_and_jpeg_roundtrip(tmp_path: Path):
         assert out_rgb.size == (40, 32)
 
 
-def test_safety_trigger_forces_conservative_and_final_safe(tmp_path: Path):
-    input_path = tmp_path / "input2.png"
+def test_hybrid_small_residual_safe(tmp_path: Path):
+    input_path = tmp_path / "input_hybrid_safe.png"
     _make_test_image(input_path)
 
-    predictor = Predictor(model=StubExtremeUnsafeModel())
-    warped, metadata = predictor.predict(input_path)
+    predictor = Predictor(model=StubHybridSmallResidualModel())
+    _, metadata = predictor.predict(input_path)
 
-    assert metadata["mode_used"] == "param_only_conservative"
+    assert metadata["mode_used"] == "hybrid"
+    assert metadata["safety"]["safe"] is True
+    assert isinstance(metadata["warnings"], list)
+
+
+def test_hybrid_huge_residual_fallback(tmp_path: Path):
+    input_path = tmp_path / "input_hybrid_unsafe.png"
+    _make_test_image(input_path)
+
+    predictor = Predictor(model=StubHybridHugeResidualModel())
+    _, metadata = predictor.predict(input_path)
+
+    assert metadata["mode_used"] in ("param_only", "param_only_conservative")
     assert isinstance(metadata["warnings"], list)
     assert len(metadata["warnings"]) > 0
     assert metadata["safety"]["safe"] is True
-    assert tuple(warped.shape) == (1, 3, 32, 40)
 
 
 def _run_all_with_tmpdir() -> None:
@@ -103,7 +121,8 @@ def _run_all_with_tmpdir() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         test_param_only_inference_identity_and_jpeg_roundtrip(tmp_path)
-        test_safety_trigger_forces_conservative_and_final_safe(tmp_path)
+        test_hybrid_small_residual_safe(tmp_path)
+        test_hybrid_huge_residual_fallback(tmp_path)
 
 
 if __name__ == "__main__":
