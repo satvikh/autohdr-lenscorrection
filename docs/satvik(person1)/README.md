@@ -20,6 +20,9 @@ Person 1 owns Geometry + Inference + Safety.
 - `person1_specdoc.md`
 - `concurrency_plan_person1.md`
 - `execution_checklist_person1.md`
+- `person3b_specdoc.md`
+- `person3b_contract.md`
+- `person3b_execution_checklist.md`
 
 ## Integration Dependencies
 - Depends on model output contract from Person 2.
