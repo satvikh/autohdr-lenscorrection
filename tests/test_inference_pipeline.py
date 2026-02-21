@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import subprocess
 import sys
 
 import numpy as np
@@ -115,6 +117,41 @@ def test_hybrid_huge_residual_fallback(tmp_path: Path):
     assert metadata["safety"]["safe"] is True
 
 
+def test_infer_test_writes_run_metadata_json(tmp_path: Path):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    _make_test_image(input_dir / "img_a.png", h=16, w=20)
+    _make_test_image(input_dir / "img_b.png", h=18, w=22)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("resize_to: null\n", encoding="utf-8")
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "infer_test.py"),
+        str(input_dir),
+        str(output_dir),
+        "--checkpoint-id",
+        "ckpt_test_001",
+        "--config-path",
+        str(config_path),
+    ]
+    subprocess.run(cmd, cwd=str(ROOT), check=True)
+
+    metadata_path = output_dir / "run_metadata.json"
+    assert metadata_path.exists()
+
+    data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert data["checkpoint_id"] == "ckpt_test_001"
+    assert data["config_hash"] != "none"
+    assert data["processed"] == 2
+    assert isinstance(data["mode_counts"], dict)
+    assert "timestamp_utc" in data
+
+
 def _run_all_with_tmpdir() -> None:
     import tempfile
 
@@ -123,6 +160,7 @@ def _run_all_with_tmpdir() -> None:
         test_param_only_inference_identity_and_jpeg_roundtrip(tmp_path)
         test_hybrid_small_residual_safe(tmp_path)
         test_hybrid_huge_residual_fallback(tmp_path)
+        test_infer_test_writes_run_metadata_json(tmp_path)
 
 
 if __name__ == "__main__":
