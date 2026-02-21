@@ -1,20 +1,53 @@
-# Contracts: Geometry + Inference API (Phase 0)
+# Contracts (Global, Cross-Role)
+
+This document freezes interfaces between Person 1, Person 2, and Person 3 systems.
 
 ## Scope
-This document defines only the Person 1 contracts required in Phase 0:
-- Geometry API
-- Inference API
+This contract governs:
+- dataset output format (Person 3 owned)
+- model forward output format (Person 2 owned)
+- geometry API and inference behavior (Person 1 owned)
+- proxy scorer API (Person 3 owned)
+- shared config key policy (shared, owner assigned)
 
-No training/model internals are defined here beyond integration inputs/outputs.
-
-## Global Geometry Policies
+## Global Conventions
 - Warp direction: backward warp only.
-- Sampling coordinate convention: PyTorch `grid_sample` normalized coordinates in `[-1, 1]`.
-- `align_corners`: single global value for all geometry operations; set to `True` for this project and never mix values across modules.
-- Warping rule: single-pass warp only in production inference (`G_final` must be fused before sampling).
-- Default padding policy: `padding_mode="border"`.
+- Grid coordinate convention: PyTorch `grid_sample` normalized coordinates in `[-1, 1]`.
+- Global geometry `align_corners`: always `True`.
+- Final output path: one-pass fused warp only.
+- Default warp padding mode: `border`.
 
-## Geometry API (Mandatory, Exact Signatures)
+## Contract A: Dataset Sample Format (Owner: Person 3)
+Each dataset sample must provide:
+```python
+{
+  "input_image": Tensor[C,H,W],
+  "target_image": Tensor[C,H,W],
+  "image_id": str,
+  "orig_size": tuple[int, int],
+  "metadata": dict  # optional
+}
+```
+
+Notes:
+- `input_image` is distorted source.
+- `target_image` is corrected ground truth.
+- `orig_size` is source resolution before resize.
+- Additional metadata keys are allowed but must not break required keys.
+
+## Contract B: Model Output Format (Owner: Person 2)
+Model forward output must be a dict with fixed keys:
+- `params` (required): `Tensor[B,8]` ordered `[k1,k2,k3,p1,p2,dcx,dcy,s]`
+- `residual_flow` (optional): `Tensor[B,2,Hr,Wr]` or `Tensor[B,Hr,Wr,2]`
+- `pred_image` (optional): `Tensor[B,C,H,W]` when model applies geometry internally
+- `param_grid` (optional debug): `Tensor[B,H,W,2]`
+- `final_grid` (optional debug): `Tensor[B,H,W,2]`
+
+Residual units:
+- `residual_flow` is in pixel displacement units `(dx, dy)` relative to its own spatial resolution.
+
+## Contract C: Geometry API (Owner: Person 1)
+Mandatory signatures:
 ```python
 build_parametric_grid(params, height, width, align_corners, device, dtype) -> Tensor[B,H,W,2]
 upsample_residual_flow(flow_lr, target_h, target_w, align_corners) -> Tensor[B,H,W,2]
@@ -23,116 +56,114 @@ warp_image(image, grid, mode, padding_mode, align_corners) -> Tensor[B,C,H,W]
 jacobian_stats(grid) -> dict
 ```
 
-## Geometry Contract Details
-- Internal geometry tensor layout policy:
-  - All geometry grid/displacement tensors inside Person 1 geometry functions use BHWC convention: `[B, H, W, 2]`.
-  - Last dimension ordering is `(x, y)` / `(gx, gy)`.
-- `params`:
-  - Type: `torch.Tensor`.
-  - Canonical shape: `[B, 8]`.
-  - Canonical ordering (fixed): `[k1, k2, k3, p1, p2, dcx, dcy, s]`.
-  - Names are fixed and position-dependent per the ordering above.
-  - Optional `aspect` is out of Phase 0 contract and not part of the `[B, 8]` schema.
-- `build_parametric_grid(...)`:
-  - Output shape: `[B, H, W, 2]` where last dim is `(gx, gy)`.
-  - Output is a backward sampling grid directly consumable by `torch.nn.functional.grid_sample`.
-- `flow_lr`:
-  - Canonical internal shape: `[B, H, W, 2]` (BHWC).
-  - Canonical internal units: normalized grid delta in `grid_sample` coordinate space.
-  - Must be upsampled to target resolution with the same global `align_corners=True`.
-- `fuse_grids(param_grid, residual_flow)`:
-  - Must perform `G_final = G_param + Delta_G_residual`.
-  - Returns a single fused sampling grid for one-pass warping.
-- `warp_image(image, grid, mode, padding_mode, align_corners)`:
-  - `image` shape: `[B, C, H, W]`.
-  - `grid` shape: `[B, H, W, 2]`.
-  - `padding_mode` default: `"border"`.
-- `jacobian_stats(grid)` must return a dictionary containing at least:
-  - `negative_det_pct`
-  - `det_min`
-  - `det_p01`
-  - `det_mean`
-  - Optional: high-gradient area fraction metric.
+Geometry layout policy:
+- Geometry grid and displacement tensors use `BHWC` with `(x, y)` ordering.
 
-## Inference API (Person 1)
-Inference consumes model outputs from Person 2 and guarantees full-resolution, safety-gated, single-pass warping.
+Parameter policy:
+- Canonical `params` ordering is fixed and position-dependent.
+- Optional `aspect` is not part of base `[B,8]` contract unless explicitly enabled by contract revision.
 
-### Model Output Integration Contract
-Model forward output dictionary keys and schema:
-- `params` (required):
-  - Type: `torch.Tensor`
-  - Shape: `[B, 8]`
-  - Ordering: `[k1, k2, k3, p1, p2, dcx, dcy, s]`
-- `residual_flow` (optional, required for hybrid mode):
-  - Accepted input layouts from model: BCHW (`[B, 2, Hr, Wr]`) or BHWC (`[B, Hr, Wr, 2]`)
-  - Units at model output: pixel displacement (not normalized)
-  - Reference resolution for pixel units: the residual tensor's own spatial resolution `(Hr, Wr)`
-  - Axis order in 2-vector: `(dx, dy)` in image x/y directions
+Residual adapter rules:
+- Accept model `residual_flow` in BCHW or BHWC.
+- Convert to canonical BHWC normalized grid delta before fusion.
+- Conversion with `align_corners=True`:
+  - `dx_norm = 2 * dx_px / (Wr - 1)` when `Wr > 1`, else `0`
+  - `dy_norm = 2 * dy_px / (Hr - 1)` when `Hr > 1`, else `0`
 
-### Predictor Contract (`predictor.py`)
-`predict(...)` behavior contract:
-1. Load model/checkpoint in eval mode.
-2. Preprocess image to model input size.
-3. Run model forward pass.
-4. Build parametric grid.
-5. If residual exists, upsample + fuse into one final grid.
-6. Compute safety metrics.
-7. Apply fallback hierarchy if unsafe.
-8. Warp full-resolution image exactly once.
-9. Return corrected image plus metadata.
+## Contract D: Inference Behavior (Owner: Person 1)
+`predict(...)` must perform:
+1. load model/checkpoint in eval mode
+2. preprocess to model size
+3. forward pass
+4. parametric grid build
+5. residual upsample/fusion when available
+6. safety evaluation
+7. fallback routing when unsafe
+8. full-resolution one-pass warp
+9. metadata return
 
 Required metadata keys:
-- `mode_used` (`"hybrid" | "param_only" | "param_only_conservative"`)
-- `safety` (structured safety result)
-- `jacobian` (jacobian stats dictionary)
-- `warnings` (list of warning strings; may be empty)
+- `mode_used`: `"hybrid" | "param_only" | "param_only_conservative"`
+- `safety`: structured safety result
+- `jacobian`: Jacobian stats dict
+- `warnings`: list[str]
 
-### Safety Contract (`safety.py`)
-`evaluate_safety(...)` must return:
+## Contract E: Proxy Scorer API (Owner: Person 3)
+Required entry point:
+```python
+compute_proxy_score(pred, gt, config) -> dict
+```
+
+Minimum return keys:
+```python
+{
+  "total_score": float,
+  "sub_scores": {
+    "edge": float,
+    "line": float,
+    "grad": float,
+    "ssim": float,
+    "mae": float
+  },
+  "flags": {
+    "hard_fail": bool,
+    "reasons": list[str]
+  }
+}
+```
+
+## Contract F: Safety API (Owner: Person 1, consumed by Person 3)
+`evaluate_safety(...)` returns:
 ```python
 {
   "safe": bool,
   "reasons": [str],
-  "metrics": {...}
+  "metrics": {
+    "oob_ratio": float,
+    "border_invalid_ratio": float,
+    "jacobian_negative_det_pct": float,
+    "residual_magnitude": float
+  }
 }
 ```
-Minimum metrics tracked:
-- out-of-bounds sample ratio
-- invalid/black border ratio
-- Jacobian foldover metrics
-- residual magnitude summary
 
-### Fallback Contract (`fallback.py`)
-Required fallback order:
-1. Hybrid (`params + residual`)
-2. Param-only
-3. Conservative param-only (stronger clamp and/or tighter zoom)
+## Contract G: Fallback Policy (Owner: Person 1)
+Required order:
+1. hybrid
+2. param-only
+3. conservative param-only
 
-If all fail, emit best-effort output and set a hard warning flag in metadata.
+If all fail, emit best-effort output with hard warning metadata.
 
-### Writer Contract (`writer.py`)
-- Save deterministic JPEG outputs for submission.
-- Validate write success and output dimensions.
-- Preserve filename mapping required by QA/packaging.
-- Contract constants for deterministic JPEG writing:
-  - `JPEG_QUALITY = 95`
-  - `JPEG_SUBSAMPLING = "4:4:4"` (no chroma subsampling)
-  - `JPEG_COLORSPACE = "RGB"` (encode from RGB, no implicit BGR path)
-  - `JPEG_OPTIMIZE = False`
-  - `JPEG_PROGRESSIVE = False`
+## Contract H: QA and Submission Interface (Owner: Person 3)
+Submission tooling must guarantee:
+- filename mapping correctness
+- image decode integrity
+- output dimension consistency
+- deterministic zip packaging
+- manifest containing checkpoint/config/date/commit metadata
 
-## Residual Adapter Rules (Mandatory)
-- Adapter accepts model `residual_flow` in BCHW or BHWC only.
-- Adapter converts any accepted layout to canonical BHWC `[B, Hr, Wr, 2]`.
-- Adapter converts units from pixel displacement to normalized grid delta before fusion.
-- Pixel-to-normalized conversion must use `align_corners=True` formulas:
-  - `dx_norm = 2 * dx_px / (Wr - 1)` when `Wr > 1`, else `0`
-  - `dy_norm = 2 * dy_px / (Hr - 1)` when `Hr > 1`, else `0`
-- After conversion, normalized residual may be upsampled to target `[H, W]` with bilinear interpolation and `align_corners=True`.
-- Fusion is performed only in canonical BHWC normalized space.
+## Contract I: Config Schema Ownership
+Shared config keys include:
+- image size
+- interpolation mode
+- `align_corners`
+- parameter bounds
+- loss weights
+- batch size
+- data paths
 
-## Versioning / Breaking Changes
-Any change to the following is a breaking contract and requires explicit coordination and sign-off across Person 1, Person 2, and Person 3:
-- Geometry API function signatures
-- Global `align_corners` policy
-- Tensor layout conventions (BCHW/BHWC) for geometry and model outputs
+Ownership:
+- primary owner: Person 3
+- train-config review owner: Person 2
+- geometry convention review: Person 1
+
+## Breaking Change Policy
+Any of the following requires coordinated sign-off from all three owners:
+- model output dict key changes
+- dataset sample key changes
+- geometry API signature changes
+- `align_corners` policy changes
+- tensor layout changes
+- proxy scorer return schema changes
+- fallback mode semantics changes
