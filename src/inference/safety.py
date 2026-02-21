@@ -29,6 +29,32 @@ def _out_of_bounds_ratio(grid: Tensor) -> float:
     return float(oob.float().mean().item())
 
 
+def _invalid_border_ratio_from_grid(grid: Tensor) -> float:
+    """Estimate border risk as out-of-bounds ratio on the output border only."""
+    if grid.ndim != 4 or grid.shape[-1] != 2:
+        raise ValueError("grid must have shape [B,H,W,2]")
+
+    x = grid[..., 0]
+    y = grid[..., 1]
+    oob = (x < -1.0) | (x > 1.0) | (y < -1.0) | (y > 1.0)
+
+    _, h, w = oob.shape
+    if h == 0 or w == 0:
+        return 0.0
+
+    border_mask = torch.zeros_like(oob, dtype=torch.bool)
+    border_mask[:, 0, :] = True
+    border_mask[:, -1, :] = True
+    border_mask[:, :, 0] = True
+    border_mask[:, :, -1] = True
+
+    border_oob = oob & border_mask
+    border_count = int(border_mask.sum().item())
+    if border_count == 0:
+        return 0.0
+    return float(border_oob.sum().item()) / float(border_count)
+
+
 def _residual_summary_norm(residual_flow_norm_bhwc: Tensor | None) -> dict[str, float]:
     if residual_flow_norm_bhwc is None:
         return {
@@ -59,19 +85,17 @@ def evaluate_safety(
     invalid_border_ratio: float | None = None,
     config: SafetyConfig | None = None,
 ) -> dict[str, Any]:
-    """Evaluate runtime safety checks for a BHWC sampling grid.
-
-    Notes:
-    - `invalid_border_ratio` is currently a placeholder input. In this milestone,
-      caller may provide it; otherwise it defaults to 0.0.
-    """
+    """Evaluate runtime safety checks for a BHWC sampling grid."""
     if grid.ndim != 4 or grid.shape[-1] != 2:
         raise ValueError("grid must have shape [B,H,W,2]")
 
     cfg = config or SafetyConfig()
 
     oob_ratio = _out_of_bounds_ratio(grid)
-    border_ratio = 0.0 if invalid_border_ratio is None else float(invalid_border_ratio)
+    if invalid_border_ratio is None:
+        border_ratio = _invalid_border_ratio_from_grid(grid)
+    else:
+        border_ratio = float(invalid_border_ratio)
     jac = jacobian_stats(grid)
     residual_metrics = _residual_summary_norm(residual_flow_norm_bhwc)
 
