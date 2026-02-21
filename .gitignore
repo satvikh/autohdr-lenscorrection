@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+
+# Environment variables
+.env
+
+# macOS system files
+.DS_Store
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Exiftool backups
+*_original
+
+# SQLite database (if used)
+*.sqlite3
+
+
+lens-correction-train-cleaned/
+lens-correction-train-cleaned.zip
