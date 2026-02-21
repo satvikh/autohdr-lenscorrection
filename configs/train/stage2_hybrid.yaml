@@ -1,5 +1,13 @@
 run_name: stage2_hybrid
 stage: stage2_hybrid
+warp_backend: person1
+# Synthetic fallback (used when --use-synthetic is passed)
+synthetic_train_steps: 32
+synthetic_val_steps: 8
+synthetic_batch_size: 2
+synthetic_height: 256
+synthetic_width: 256
+
 device: cuda
 epochs: 25
 max_steps_per_epoch:
@@ -8,6 +16,19 @@ log_interval: 50
 amp_enabled: true
 grad_clip_norm: 1.0
 checkpoint_dir: outputs/runs
+
+proxy_enabled: false
+proxy_module_path: src.metrics.proxy_score
+proxy_function_name: compute_proxy_score
+proxy_config: {}
+
+debug_dump_dir:
+debug_dump_max_images: 0
+
+# Safety guardrails
+fail_on_nonfinite_loss: true
+param_saturation_warn_threshold: 0.60
+residual_warn_abs_max_px: 20.0
 
 optimizer:
   lr: 0.00015

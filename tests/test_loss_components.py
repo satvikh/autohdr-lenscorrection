@@ -35,6 +35,15 @@ def test_losses_increase_with_structural_mismatch() -> None:
     assert gradient_orientation_cosine_loss(pred, target).item() > 0.0
 
 
+def test_loss_stability_on_flat_images() -> None:
+    pred = torch.zeros(2, 3, 32, 32, dtype=torch.float32)
+    target = torch.zeros(2, 3, 32, 32, dtype=torch.float32)
+
+    assert torch.isfinite(SSIMLoss()(pred, target))
+    assert torch.isfinite(edge_magnitude_loss(pred, target))
+    assert torch.isfinite(gradient_orientation_cosine_loss(pred, target))
+
+
 def test_flow_regularizers_and_jacobian_penalty() -> None:
     flow = torch.randn(2, 2, 16, 16) * 0.1
     assert total_variation_loss(flow).item() >= 0.0
