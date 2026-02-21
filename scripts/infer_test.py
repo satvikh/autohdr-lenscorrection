@@ -57,7 +57,7 @@ def main() -> None:
 
     processed = 0
     mode_counts: Counter[str] = Counter()
-    safety_fail_count = 0
+    unsafe_trigger_count = 0
     reason_counts: Counter[str] = Counter()
 
     for image_path in images:
@@ -71,19 +71,23 @@ def main() -> None:
         mode = str(metadata.get("mode_used", "unknown"))
         mode_counts[mode] += 1
 
-        safety = metadata.get("safety", {})
-        safe = bool(safety.get("safe", False))
-        if not safe:
-            safety_fail_count += 1
-            for reason in safety.get("reasons", []):
+        initial_safety = metadata.get("initial_safety", {})
+        initial_safe = bool(initial_safety.get("safe", True))
+        if not initial_safe:
+            unsafe_trigger_count += 1
+            for reason in initial_safety.get("reasons", []):
                 reason_counts[str(reason)] += 1
 
-        print(f"[{processed}/{total}] {image_path.name} -> {out_path.name} mode={mode} safe={safe}")
+        final_safe = bool(metadata.get("safety", {}).get("safe", False))
+        print(
+            f"[{processed}/{total}] {image_path.name} -> {out_path.name} "
+            f"mode={mode} initial_safe={initial_safe} final_safe={final_safe}"
+        )
 
     print("Summary")
     print(f"- processed: {processed}")
     print(f"- mode_used_counts: {dict(mode_counts)}")
-    print(f"- safety_failures: {safety_fail_count}")
+    print(f"- unsafe_triggers: {unsafe_trigger_count}")
     print("- safety_reasons_top:")
     for reason, count in reason_counts.most_common(5):
         print(f"  - {reason}: {count}")

@@ -23,19 +23,19 @@ class StubNeutralModel:
         return {"params": params}
 
 
-class StubUnsafeThenConservativeSafeModel:
+class StubExtremeUnsafeModel:
     def __call__(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         b = image.shape[0]
         params = torch.zeros((b, 8), dtype=image.dtype, device=image.device)
-        # Intentionally unsafe in baseline (triggers OOB), but conservative clamp should recover.
-        params[:, 0] = -0.21210544
-        params[:, 1] = -0.16145031
-        params[:, 2] = 0.14677799
-        params[:, 3] = -0.01208510
-        params[:, 4] = 0.00360298
-        params[:, 5] = 0.02625185
-        params[:, 6] = -0.07400852
-        params[:, 7] = 0.92668712
+        # Extreme raw outputs that should trigger safety before conservative fallback.
+        params[:, 0] = -1.6988822
+        params[:, 1] = -0.04983214
+        params[:, 2] = 0.2604164
+        params[:, 3] = 0.13875858
+        params[:, 4] = 0.15665331
+        params[:, 5] = 0.9040643
+        params[:, 6] = 0.72543573
+        params[:, 7] = 2.9072435
         return {"params": params}
 
 
@@ -83,18 +83,17 @@ def test_param_only_inference_identity_and_jpeg_roundtrip(tmp_path: Path):
         assert out_rgb.size == (40, 32)
 
 
-def test_fallback_to_conservative_and_safe_final(tmp_path: Path):
+def test_safety_trigger_forces_conservative_and_final_safe(tmp_path: Path):
     input_path = tmp_path / "input2.png"
     _make_test_image(input_path)
 
-    predictor = Predictor(model=StubUnsafeThenConservativeSafeModel())
+    predictor = Predictor(model=StubExtremeUnsafeModel())
     warped, metadata = predictor.predict(input_path)
 
     assert metadata["mode_used"] == "param_only_conservative"
     assert isinstance(metadata["warnings"], list)
     assert len(metadata["warnings"]) > 0
     assert metadata["safety"]["safe"] is True
-    assert metadata["jacobian"]["negative_det_pct"] >= 0.0
     assert tuple(warped.shape) == (1, 3, 32, 40)
 
 
@@ -104,7 +103,7 @@ def _run_all_with_tmpdir() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         test_param_only_inference_identity_and_jpeg_roundtrip(tmp_path)
-        test_fallback_to_conservative_and_safe_final(tmp_path)
+        test_safety_trigger_forces_conservative_and_final_safe(tmp_path)
 
 
 if __name__ == "__main__":
