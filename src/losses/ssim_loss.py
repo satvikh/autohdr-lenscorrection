@@ -26,8 +26,14 @@ def ssim_index(
         raise ValueError(f"pred and target must have identical shape, got {pred.shape} vs {target.shape}")
     if pred.ndim != 4:
         raise ValueError("pred and target must have shape [B,C,H,W]")
+    if not pred.is_floating_point() or not target.is_floating_point():
+        raise ValueError("pred and target must be floating point tensors")
     if window_size % 2 == 0:
         raise ValueError("window_size must be odd")
+
+    # Run SSIM in FP32 for stability across AMP / lower-precision callsites.
+    pred = pred.float()
+    target = target.float()
 
     c1 = (k1 * data_range) ** 2
     c2 = (k2 * data_range) ** 2
@@ -43,12 +49,15 @@ def ssim_index(
     sigma_x2 = F.avg_pool2d(pred * pred, kernel_size=window_size, stride=1, padding=pad) - mu_x2
     sigma_y2 = F.avg_pool2d(target * target, kernel_size=window_size, stride=1, padding=pad) - mu_y2
     sigma_xy = F.avg_pool2d(pred * target, kernel_size=window_size, stride=1, padding=pad) - mu_xy
+    sigma_x2 = torch.clamp(sigma_x2, min=0.0)
+    sigma_y2 = torch.clamp(sigma_y2, min=0.0)
 
     num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
     den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
 
     den = torch.clamp(den, min=eps)
     ssim_map = num / den
+    ssim_map = torch.nan_to_num(ssim_map, nan=0.0, posinf=1.0, neginf=-1.0)
     ssim_map = torch.clamp(ssim_map, min=-1.0, max=1.0)
     out = ssim_map.mean()
     if not torch.isfinite(out):
