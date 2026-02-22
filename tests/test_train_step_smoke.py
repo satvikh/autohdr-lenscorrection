@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import warnings
 
 import torch
 
+import src.train.engine as engine_module
 from src.losses.composite import CompositeLoss, config_for_stage
 from src.models.hybrid_model import HybridLensCorrectionModel, HybridModelConfig
 from src.train.checkpointing import load_checkpoint, save_checkpoint
@@ -11,7 +13,7 @@ from src.train.config_loader import load_train_config
 from src.train.engine import EngineConfig, TrainerEngine
 from src.train.optim import OptimConfig, SchedulerConfig, create_optimizer, create_scheduler
 from src.train.stage_configs import get_stage_toggles
-from src.train.train_step import run_eval_step, run_train_step
+from src.train.train_step import TrainStepResult, run_eval_step, run_train_step
 from src.train.warp_backends import MockWarpBackend, Person1GeometryWarpBackend
 
 
@@ -165,6 +167,42 @@ def test_trainer_engine_smoke(tmp_path: Path) -> None:
     assert (tmp_path / "runs" / "smoke_engine" / "last.pt").exists()
 
 
+def test_validation_probe_checksums_present(tmp_path: Path) -> None:
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+    sched_bundle = create_scheduler(
+        optimizer,
+        SchedulerConfig(name="none"),
+        total_steps=2,
+        steps_per_epoch=1,
+    )
+    engine = TrainerEngine(
+        model=model,
+        loss_fn=loss_fn,
+        stage=stage,
+        warp_backend=MockWarpBackend(),
+        optimizer=optimizer,
+        scheduler=sched_bundle.scheduler,
+        scheduler_step_interval=sched_bundle.step_interval,
+        config=EngineConfig(
+            epochs=1,
+            amp_enabled=False,
+            log_interval=0,
+            device="cpu",
+            max_val_steps=1,
+            checkpoint_dir=str(tmp_path / "runs"),
+            debug_instrumentation=True,
+            debug_probe_enabled=True,
+            debug_probe_max_samples=2,
+        ),
+    )
+    val_metrics = engine.validate([_dummy_batch()], epoch=1)
+    assert "probe_pred_checksum" in val_metrics
+    assert isinstance(val_metrics["probe_pred_checksum"], str)
+
+
 def test_stage1_disables_residual_path() -> None:
     class SpyBackend(MockWarpBackend):
         def __init__(self) -> None:
@@ -225,6 +263,170 @@ def test_stage2_enables_residual_path() -> None:
         device=torch.device("cpu"),
     )
     assert backend.last_residual_is_none is False
+
+
+def test_stage2_residual_head_receives_nonzero_gradients() -> None:
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage2_hybrid"))
+    stage = get_stage_toggles("stage2_hybrid")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    out = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=MockWarpBackend(),
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=False,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        debug_instrumentation=True,
+    )
+
+    residual = out.model_outputs.get("residual_flow_lowres")
+    assert torch.is_tensor(residual)
+    assert residual.abs().max().item() >= 0.0
+
+    residual_grads = [
+        p.grad
+        for name, p in model.named_parameters()
+        if name.startswith("residual_head.") and p.grad is not None
+    ]
+    assert residual_grads, "Expected at least one residual-head gradient tensor."
+    nonzero = max(float(g.detach().abs().max().item()) for g in residual_grads)
+    assert nonzero > 0.0
+    assert out.diagnostics.get("grad_norm_residual_head", 0.0) > 0.0
+
+
+def test_amp_enabled_path_uses_fp32_for_warp_and_loss() -> None:
+    class DTypeSpyBackend(MockWarpBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.image_dtype: torch.dtype | None = None
+            self.params_dtype: torch.dtype | None = None
+            self.residual_dtype: torch.dtype | None = None
+
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            self.image_dtype = image.dtype
+            self.params_dtype = params.dtype
+            self.residual_dtype = residual_flow_lowres.dtype if residual_flow_lowres is not None else None
+            return super().warp(image, params, residual_flow_lowres)
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    backend = DTypeSpyBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    out = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=backend,
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=True,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        debug_instrumentation=True,
+    )
+
+    assert backend.image_dtype == torch.float32
+    assert backend.params_dtype == torch.float32
+    assert out.pred_image.dtype == torch.float32
+    assert out.components["total"].dtype == torch.float32
+
+
+def test_batch_scheduler_skips_step_when_optimizer_step_skipped(tmp_path: Path, monkeypatch) -> None:
+    class CounterScheduler:
+        def __init__(self) -> None:
+            self.step_calls = 0
+
+        def step(self) -> None:
+            self.step_calls += 1
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+    scheduler = CounterScheduler()
+
+    engine = TrainerEngine(
+        model=model,
+        loss_fn=loss_fn,
+        stage=stage,
+        warp_backend=MockWarpBackend(),
+        optimizer=optimizer,
+        scheduler=scheduler,  # type: ignore[arg-type]
+        scheduler_step_interval="batch",
+        config=EngineConfig(
+            epochs=1,
+            amp_enabled=False,
+            log_interval=0,
+            device="cpu",
+            max_steps_per_epoch=2,
+            checkpoint_dir=str(tmp_path / "runs"),
+        ),
+    )
+
+    calls = {"count": 0}
+
+    def fake_run_train_step(**kwargs) -> TrainStepResult:
+        calls["count"] += 1
+        skipped = 1.0 if calls["count"] == 1 else 0.0
+        t = torch.zeros(2, 3, 8, 8, dtype=torch.float32)
+        return TrainStepResult(
+            total_loss=torch.tensor(1.0, dtype=torch.float32),
+            components={"total": torch.tensor(1.0, dtype=torch.float32)},
+            pred_image=t,
+            model_outputs={},
+            warp_outputs={"warp_stats": {}},
+            diagnostics={"optim_step_skipped": skipped},
+        )
+
+    monkeypatch.setattr(engine_module, "run_train_step", fake_run_train_step)
+    train_loader = [_dummy_batch(), _dummy_batch()]
+    _ = engine.train_one_epoch(train_loader, epoch=1)
+    assert scheduler.step_calls == 1
+
+
+def test_scheduler_order_warning_not_emitted(tmp_path: Path) -> None:
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+    sched_bundle = create_scheduler(
+        optimizer,
+        SchedulerConfig(name="cosine"),
+        total_steps=4,
+        steps_per_epoch=2,
+    )
+    engine = TrainerEngine(
+        model=model,
+        loss_fn=loss_fn,
+        stage=stage,
+        warp_backend=MockWarpBackend(),
+        optimizer=optimizer,
+        scheduler=sched_bundle.scheduler,
+        scheduler_step_interval=sched_bundle.step_interval,
+        config=EngineConfig(
+            epochs=1,
+            amp_enabled=False,
+            log_interval=0,
+            device="cpu",
+            max_steps_per_epoch=2,
+            max_val_steps=1,
+            checkpoint_dir=str(tmp_path / "runs"),
+        ),
+    )
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _ = engine.fit(train_loader=[_dummy_batch(), _dummy_batch()], val_loader=[_dummy_batch()], run_name="warn_check")
+    assert not any("lr_scheduler.step() before optimizer.step()" in str(msg.message) for msg in w)
 
 
 def test_person1_geometry_backend_smoke() -> None:

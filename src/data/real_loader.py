@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import platform
 import random
 import re
 from dataclasses import dataclass
@@ -99,6 +100,12 @@ def resolve_real_data_config() -> RealDataLoaderConfig:
         raise ValueError(f"AUTOHDR_VAL_FRAC must be in (0,1), got {val_frac}")
 
     split_dir.mkdir(parents=True, exist_ok=True)
+    num_workers = _env_int("AUTOHDR_NUM_WORKERS", 0)
+    if platform.system().lower().startswith("win") and num_workers > 0:
+        print(
+            "[warn] AUTOHDR_NUM_WORKERS > 0 on Windows may cause loader instability/hangs on this project. "
+            "Recommended: AUTOHDR_NUM_WORKERS=0."
+        )
     return RealDataLoaderConfig(
         root_dir=root_dir,
         split_dir=split_dir,
@@ -109,7 +116,7 @@ def resolve_real_data_config() -> RealDataLoaderConfig:
         seed=_env_int("AUTOHDR_SPLIT_SEED", 123),
         max_pairs=_env_optional_int("AUTOHDR_MAX_PAIRS"),
         batch_size=_env_int("AUTOHDR_BATCH_SIZE", 2),
-        num_workers=_env_int("AUTOHDR_NUM_WORKERS", 0),
+        num_workers=num_workers,
         resize_hw=_env_hw("AUTOHDR_RESIZE_HW", (512, 768)),
         train_hflip_prob=_env_float("AUTOHDR_TRAIN_HFLIP", 0.5),
         pin_memory=_env_bool("AUTOHDR_PIN_MEMORY", False),
@@ -333,4 +340,3 @@ def build_train_val_loaders(stage: str) -> tuple[DataLoader, DataLoader]:
     train_loader = DataLoader(train_ds, shuffle=True, **common_loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **common_loader_kwargs)
     return train_loader, val_loader
-

@@ -112,7 +112,7 @@ class ParametricHead(nn.Module):
         with torch.no_grad():
             final_linear.bias.copy_(bias)
 
-    def _apply_bounds(self, raw: Tensor) -> Tensor:
+    def apply_bounds(self, raw: Tensor) -> Tensor:
         if raw.ndim != 2:
             raise ValueError("raw must have shape [B,N]")
 
@@ -128,11 +128,13 @@ class ParametricHead(nn.Module):
 
         return torch.stack(outs, dim=1)
 
-    def forward(self, feat: Tensor) -> Tensor:
+    def predict_raw(self, feat: Tensor) -> Tensor:
         if feat.ndim != 4:
             raise ValueError("feat must have shape [B,C,H,W]")
 
         pooled = self.pool(feat)
-        raw = self.mlp(pooled)
-        params = self._apply_bounds(raw)
-        return params
+        return self.mlp(pooled)
+
+    def forward(self, feat: Tensor) -> Tensor:
+        raw = self.predict_raw(feat)
+        return self.apply_bounds(raw)

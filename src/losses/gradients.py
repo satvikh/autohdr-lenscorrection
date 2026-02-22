@@ -7,6 +7,17 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
+def _as_float_image_pair(pred: Tensor, target: Tensor) -> tuple[Tensor, Tensor]:
+    if pred.shape != target.shape:
+        raise ValueError(f"pred and target must have identical shape, got {pred.shape} vs {target.shape}")
+    if pred.ndim != 4:
+        raise ValueError("pred and target must have shape [B,C,H,W]")
+    if not pred.is_floating_point() or not target.is_floating_point():
+        raise ValueError("pred and target must be floating point tensors")
+    # Always run gradient losses in FP32 for numeric stability under autocast / mixed precision.
+    return pred.float(), target.float()
+
+
 def _sobel_kernels(*, device: torch.device, dtype: torch.dtype) -> tuple[Tensor, Tensor]:
     kx = torch.tensor(
         [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
@@ -54,14 +65,17 @@ def gradient_magnitude(gx: Tensor, gy: Tensor, *, eps: float = 1e-6) -> Tensor:
 
 def edge_magnitude_loss(pred: Tensor, target: Tensor, *, eps: float = 1e-6) -> Tensor:
     """L1 difference between Sobel gradient magnitudes."""
-    if pred.shape != target.shape:
-        raise ValueError(f"pred and target must have identical shape, got {pred.shape} vs {target.shape}")
+    pred_f, target_f = _as_float_image_pair(pred, target)
 
-    pred_gx, pred_gy = sobel_gradients(pred)
-    tgt_gx, tgt_gy = sobel_gradients(target)
+    pred_gx, pred_gy = sobel_gradients(pred_f)
+    tgt_gx, tgt_gy = sobel_gradients(target_f)
     pred_mag = gradient_magnitude(pred_gx, pred_gy, eps=eps)
     tgt_mag = gradient_magnitude(tgt_gx, tgt_gy, eps=eps)
-    return (pred_mag - tgt_mag).abs().mean()
+    out = (pred_mag - tgt_mag).abs().mean()
+    out = torch.nan_to_num(out, nan=0.0, posinf=1e6, neginf=1e6)
+    if not torch.isfinite(out):
+        raise RuntimeError("edge_magnitude_loss produced non-finite value")
+    return out
 
 
 def gradient_orientation_cosine_loss(
@@ -70,25 +84,26 @@ def gradient_orientation_cosine_loss(
     *,
     eps: float = 1e-6,
     weight_by_target_magnitude: bool = True,
+    target_weight_cap: float = 5.0,
 ) -> Tensor:
     """Gradient orientation mismatch loss.
 
     Cosine similarity is computed between gradient vectors (gx, gy).
     Loss = 1 - cosine similarity, optionally weighted by GT magnitude.
     """
-    if pred.shape != target.shape:
-        raise ValueError(f"pred and target must have identical shape, got {pred.shape} vs {target.shape}")
+    pred_f, target_f = _as_float_image_pair(pred, target)
 
-    pred_gx, pred_gy = sobel_gradients(pred)
-    tgt_gx, tgt_gy = sobel_gradients(target)
+    pred_gx, pred_gy = sobel_gradients(pred_f)
+    tgt_gx, tgt_gy = sobel_gradients(target_f)
 
     dot = (pred_gx * tgt_gx) + (pred_gy * tgt_gy)
     pred_norm = torch.sqrt((pred_gx * pred_gx) + (pred_gy * pred_gy) + eps)
     tgt_norm = torch.sqrt((tgt_gx * tgt_gx) + (tgt_gy * tgt_gy) + eps)
 
-    cos = dot / (pred_norm * tgt_norm + eps)
+    denom = torch.clamp(pred_norm * tgt_norm, min=eps)
+    cos = dot / denom
     cos = torch.clamp(cos, min=-1.0, max=1.0)
-    base = 1.0 - cos
+    base = torch.nan_to_num(1.0 - cos, nan=0.0, posinf=2.0, neginf=2.0)
 
     if not weight_by_target_magnitude:
         out = base.mean()
@@ -96,7 +111,11 @@ def gradient_orientation_cosine_loss(
             raise RuntimeError("gradient_orientation_cosine_loss produced non-finite value")
         return out
 
-    weights = tgt_norm / (tgt_norm.mean() + eps)
+    denom_w = torch.clamp(tgt_norm.mean(), min=eps)
+    weights = tgt_norm / denom_w
+    weights = torch.nan_to_num(weights, nan=0.0, posinf=target_weight_cap, neginf=0.0)
+    if target_weight_cap > 0.0:
+        weights = torch.clamp(weights, min=0.0, max=float(target_weight_cap))
     out = (base * weights).mean()
     if not torch.isfinite(out):
         raise RuntimeError("gradient_orientation_cosine_loss produced non-finite value")

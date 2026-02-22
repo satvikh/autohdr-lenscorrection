@@ -44,6 +44,47 @@ def test_loss_stability_on_flat_images() -> None:
     assert torch.isfinite(gradient_orientation_cosine_loss(pred, target))
 
 
+def test_gradient_orientation_backward_is_finite_on_low_gradient_targets() -> None:
+    pred = (torch.randn(1, 3, 32, 32, dtype=torch.float32) * 1e-3).requires_grad_(True)
+    target = torch.zeros(1, 3, 32, 32, dtype=torch.float32)
+
+    loss = gradient_orientation_cosine_loss(pred, target, eps=1e-6, weight_by_target_magnitude=True)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert pred.grad is not None
+    assert torch.isfinite(pred.grad).all()
+
+
+def test_losses_compute_in_stable_fp32_path_for_mixed_precision_callers() -> None:
+    pred = (torch.randn(1, 3, 32, 32, dtype=torch.float64) * 20.0).requires_grad_(True)
+    target = torch.randn(1, 3, 32, 32, dtype=torch.float64) * 20.0
+
+    ssim = SSIMLoss()(pred, target)
+    edge = edge_magnitude_loss(pred, target)
+    grad = gradient_orientation_cosine_loss(pred, target)
+
+    assert ssim.dtype == torch.float32
+    assert edge.dtype == torch.float32
+    assert grad.dtype == torch.float32
+    assert torch.isfinite(ssim)
+    assert torch.isfinite(edge)
+    assert torch.isfinite(grad)
+
+    total = ssim + edge + grad
+    total.backward()
+    assert pred.grad is not None
+    assert torch.isfinite(pred.grad).all()
+
+
+def test_ssim_stays_finite_on_high_dynamic_range_inputs() -> None:
+    pred = torch.randn(2, 3, 32, 32, dtype=torch.float32) * 100.0
+    target = torch.randn(2, 3, 32, 32, dtype=torch.float32) * 100.0
+
+    loss = SSIMLoss()(pred, target)
+    assert torch.isfinite(loss)
+    assert loss.item() >= 0.0
+
+
 def test_flow_regularizers_and_jacobian_penalty() -> None:
     flow = torch.randn(2, 2, 16, 16) * 0.1
     assert total_variation_loss(flow).item() >= 0.0
@@ -96,3 +137,5 @@ def test_composite_loss_stage_behavior() -> None:
     assert comps2["flow_tv"].item() >= 0.0
     assert comps2["flow_mag"].item() >= 0.0
     assert comps2["jacobian"].item() >= 0.0
+    assert "flow_tv_weighted" in comps2
+    assert "pixel_weighted" in comps2

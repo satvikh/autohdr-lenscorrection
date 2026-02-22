@@ -1,0 +1,12 @@
+{
+  "total_pairs": 3000,
+  "train_pairs": 2698,
+  "val_pairs": 302,
+  "val_frac": 0.1,
+  "seed": 123,
+  "max_pairs": 3000,
+  "root_dir": "automatic-lens-correction\\lens-correction-train-cleaned",
+  "metadata_path": null,
+  "train_csv": "data\\splits\\local_mini\\train_split.csv",
+  "val_csv": "data\\splits\\local_mini\\val_split.csv"
+}

@@ -1,0 +1,16 @@
+stage: stage3_finetune
+use_charbonnier: true
+charbonnier_eps: 0.001
+multiscale_scales: [1.0, 0.5]
+
+pixel_weight: 0.08
+ssim_weight: 0.15
+edge_weight: 0.44
+grad_orient_weight: 0.24
+
+flow_tv_weight: 0.05
+flow_mag_weight: 0.02
+flow_curv_weight: 0.01
+jacobian_weight: 0.02
+jacobian_margin: 0.0
+
