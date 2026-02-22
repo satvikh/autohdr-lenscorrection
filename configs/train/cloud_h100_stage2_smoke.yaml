@@ -1,0 +1,53 @@
+run_name: cloud_h100_stage2_smoke
+stage: stage2_hybrid
+warp_backend: person1
+synthetic_train_steps: 32
+synthetic_val_steps: 8
+synthetic_batch_size: 2
+synthetic_height: 256
+synthetic_width: 256
+
+device: cuda
+epochs: 2
+max_steps_per_epoch: 40
+max_val_steps: 12
+log_interval: 5
+amp_enabled: true
+grad_clip_norm: 1.0
+checkpoint_dir: outputs/runs
+
+proxy_enabled: true
+proxy_module_path: src.metrics.proxy_score
+proxy_function_name: compute_proxy_score
+proxy_config: {}
+best_metric_name: proxy_total_score
+best_metric_mode: max
+
+debug_dump_dir: outputs/debug/cloud_h100_stage2_smoke
+debug_dump_max_images: 12
+
+debug_instrumentation: true
+debug_metric_precision: 10
+debug_log_sample_ids: true
+debug_param_update_interval: 5
+debug_perf_enabled: true
+debug_perf_interval: 5
+debug_probe_enabled: true
+debug_probe_max_samples: 16
+debug_residual_inactive_threshold_px: 0.000001
+debug_residual_inactive_patience: 8
+debug_zero_grad_threshold: 0.0000000001
+debug_zero_param_delta_threshold: 0.0000000001
+
+fail_on_nonfinite_loss: true
+param_saturation_warn_threshold: 0.60
+residual_warn_abs_max_px: 30.0
+
+optimizer:
+  lr: 0.00015
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+
+scheduler:
+  name: cosine
+  min_lr: 0.000001
