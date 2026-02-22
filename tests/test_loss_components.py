@@ -5,7 +5,7 @@ import torch
 from src.geometry.coords import make_identity_grid
 from src.losses.composite import CompositeLoss, CompositeLossConfig, config_for_stage
 from src.losses.flow_regularizers import flow_curvature_loss, flow_magnitude_loss, total_variation_loss
-from src.losses.gradients import edge_magnitude_loss, gradient_orientation_cosine_loss
+from src.losses.gradients import edge_magnitude_loss, gradient_orientation_cosine_loss, line_orientation_hist_loss
 from src.losses.jacobian_loss import jacobian_foldover_penalty
 from src.losses.pixel import CharbonnierLoss, l1_loss
 from src.losses.ssim_loss import SSIMLoss
@@ -18,6 +18,7 @@ def test_basic_losses_identical_inputs_are_small() -> None:
     assert l1_loss(pred, target).item() < 1e-7
     assert SSIMLoss()(pred, target).item() < 1e-5
     assert edge_magnitude_loss(pred, target).item() < 1e-6
+    assert line_orientation_hist_loss(pred, target).item() < 1e-5
     assert gradient_orientation_cosine_loss(pred, target).item() < 5e-6
 
     charbonnier = CharbonnierLoss(eps=1e-3)
@@ -32,6 +33,7 @@ def test_losses_increase_with_structural_mismatch() -> None:
 
     assert l1_loss(pred, target).item() > 0.0
     assert edge_magnitude_loss(pred, target).item() > 0.0
+    assert line_orientation_hist_loss(pred, target).item() > 0.0
     assert gradient_orientation_cosine_loss(pred, target).item() > 0.0
 
 
@@ -41,6 +43,7 @@ def test_loss_stability_on_flat_images() -> None:
 
     assert torch.isfinite(SSIMLoss()(pred, target))
     assert torch.isfinite(edge_magnitude_loss(pred, target))
+    assert torch.isfinite(line_orientation_hist_loss(pred, target))
     assert torch.isfinite(gradient_orientation_cosine_loss(pred, target))
 
 
@@ -61,16 +64,19 @@ def test_losses_compute_in_stable_fp32_path_for_mixed_precision_callers() -> Non
 
     ssim = SSIMLoss()(pred, target)
     edge = edge_magnitude_loss(pred, target)
+    line = line_orientation_hist_loss(pred, target)
     grad = gradient_orientation_cosine_loss(pred, target)
 
     assert ssim.dtype == torch.float32
     assert edge.dtype == torch.float32
+    assert line.dtype == torch.float32
     assert grad.dtype == torch.float32
     assert torch.isfinite(ssim)
     assert torch.isfinite(edge)
+    assert torch.isfinite(line)
     assert torch.isfinite(grad)
 
-    total = ssim + edge + grad
+    total = ssim + edge + line + grad
     total.backward()
     assert pred.grad is not None
     assert torch.isfinite(pred.grad).all()
@@ -124,6 +130,7 @@ def test_composite_loss_stage_behavior() -> None:
         pixel_weight=0.1,
         ssim_weight=0.1,
         edge_weight=0.1,
+        line_weight=0.1,
         grad_orient_weight=0.1,
         flow_tv_weight=0.1,
         flow_mag_weight=0.1,
@@ -139,3 +146,4 @@ def test_composite_loss_stage_behavior() -> None:
     assert comps2["jacobian"].item() >= 0.0
     assert "flow_tv_weighted" in comps2
     assert "pixel_weighted" in comps2
+    assert "line_weighted" in comps2

@@ -267,3 +267,41 @@ def test_build_submission_zip_manifest_falls_back_to_infer_metadata(tmp_path: Pa
     assert manifest["checkpoint_path"] == "outputs/runs/demo/best.pt"
     assert manifest["model_source"] == "checkpoint"
     assert manifest["config_hash"] == "abc123"
+
+
+def test_build_submission_zip_enforces_size_when_split_has_input_paths(tmp_path: Path) -> None:
+    from scripts.build_submission_zip import main as build_zip_main
+
+    pred = tmp_path / "pred"
+    pred.mkdir(parents=True, exist_ok=True)
+    # Prediction is intentionally wrong size.
+    _write_rgb(pred / "img_1.png", size=(20, 20))
+
+    src = tmp_path / "test_src"
+    src.mkdir(parents=True, exist_ok=True)
+    _write_rgb(src / "img_1.jpg", size=(16, 16))
+
+    split_csv = tmp_path / "split.csv"
+    split_csv.write_text(
+        "image_id,input_path\n"
+        f"img_1,{(src / 'img_1.jpg').as_posix()}\n",
+        encoding="utf-8",
+    )
+
+    out_zip = tmp_path / "submission.zip"
+    exit_code = build_zip_main(
+        [
+            "--pred_dir",
+            str(pred),
+            "--split_csv",
+            str(split_csv),
+            "--out_zip",
+            str(out_zip),
+        ]
+    )
+    assert exit_code == 2
+    assert not out_zip.exists()
+
+    qa_report = out_zip.with_name("submission_qa.json")
+    report_data = json.loads(qa_report.read_text(encoding="utf-8"))
+    assert report_data["size_check"]["effective_require_same_size"] is True

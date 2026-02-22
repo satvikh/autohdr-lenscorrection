@@ -61,6 +61,45 @@ def _load_error_hard_fail(report: dict[str, Any]) -> bool:
     return any(str(r).startswith(("pred_load_error:", "gt_load_error:")) for r in reasons)
 
 
+def _hardfail_penalty_from_config(config: Any | None) -> float:
+    cfg = config if isinstance(config, dict) else {}
+    hcfg = cfg.get("hardfail", {}) if isinstance(cfg, dict) else {}
+    acfg = cfg.get("aggregation", {}) if isinstance(cfg, dict) else {}
+    penalty_value = float(hcfg.get("penalty_value", 0.05))
+    penalty_mode = str(hcfg.get("penalty_mode", "")).strip().lower()
+    if penalty_mode == "clamp":
+        return float(max(min(penalty_value, 1.0), 0.0))
+    if penalty_mode in {"zero", "score_zero"}:
+        return 0.0
+    if penalty_mode in {"score_neg_inf", "neg_inf"}:
+        return -1e9
+    if penalty_mode == "exclude":
+        return float("nan")
+
+    fail_policy = str(acfg.get("fail_policy", "penalize")).strip().lower()
+    if fail_policy in {"clamp", "penalize"}:
+        return float(max(min(penalty_value, 1.0), 0.0))
+    if fail_policy == "score_zero":
+        return 0.0
+    if fail_policy == "score_neg_inf":
+        return -1e9
+    return float("nan")
+
+
+def _extract_total_or_penalty(report: dict[str, Any], config: Any | None) -> float | None:
+    total_score = report.get("total_score")
+    if not isinstance(total_score, (int, float)):
+        total_score = report.get("total")
+    if isinstance(total_score, (int, float)) and math.isfinite(float(total_score)):
+        return float(total_score)
+
+    if _flag_hard_fail(report):
+        # Score hard-fails as a configured penalty instead of silently dropping them.
+        penalty = _hardfail_penalty_from_config(config)
+        return float(penalty) if math.isfinite(float(penalty)) else None
+    return None
+
+
 def compute_proxy_metrics_for_batch(
     *,
     scorer: ProxyScorer,
@@ -76,6 +115,24 @@ def compute_proxy_metrics_for_batch(
     """
     if pred_batch.shape != target_batch.shape:
         raise ValueError(f"pred_batch and target_batch must have same shape, got {pred_batch.shape} vs {target_batch.shape}")
+
+    # Built-in proxy scorers generally expect CHW/HWC image tensors for a single sample.
+    # Route batch-size 1 directly to per-sample mode to avoid accidental NCHW parsing failures.
+    if pred_batch.shape[0] == 1:
+        report = _call_proxy_scorer(scorer, pred_batch[0], target_batch[0], config)
+        out: dict[str, float] = {}
+        total = _extract_total_or_penalty(report, config)
+        if total is not None:
+            out["proxy_total_score"] = float(total)
+
+        sub = report.get("sub_scores", report.get("subscores", {}))
+        if isinstance(sub, dict):
+            for k, v in sub.items():
+                if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                    out[f"proxy_{k}"] = float(v)
+
+        out["proxy_hard_fail"] = 1.0 if _flag_hard_fail(report) else 0.0
+        return out
 
     report: dict[str, Any] | None = None
     try:
@@ -97,16 +154,14 @@ def compute_proxy_metrics_for_batch(
             if _load_error_hard_fail(item_report):
                 item_report = _call_proxy_scorer(scorer, pred_batch[i], target_batch[i], config)
 
-            total_score = item_report.get("total_score")
-            if not isinstance(total_score, (int, float)):
-                total_score = item_report.get("total")
-            if isinstance(total_score, (int, float)) and math.isfinite(float(total_score)):
+            total_score = _extract_total_or_penalty(item_report, config)
+            if total_score is not None:
                 totals.append(float(total_score))
 
             sub = item_report.get("sub_scores", item_report.get("subscores", {}))
             if isinstance(sub, dict):
                 for k, v in sub.items():
-                    if isinstance(v, (int, float)):
+                    if isinstance(v, (int, float)) and math.isfinite(float(v)):
                         sub_acc.setdefault(str(k), []).append(float(v))
 
             if _flag_hard_fail(item_report):
@@ -122,16 +177,14 @@ def compute_proxy_metrics_for_batch(
         return out
 
     out = {}
-    total = report.get("total_score")
-    if not isinstance(total, (int, float)):
-        total = report.get("total")
-    if isinstance(total, (int, float)):
+    total = _extract_total_or_penalty(report, config)
+    if total is not None:
         out["proxy_total_score"] = float(total)
 
     sub = report.get("sub_scores", report.get("subscores", {}))
     if isinstance(sub, dict):
         for k, v in sub.items():
-            if isinstance(v, (int, float)):
+            if isinstance(v, (int, float)) and math.isfinite(float(v)):
                 out[f"proxy_{k}"] = float(v)
 
     flags = report.get("flags", {})

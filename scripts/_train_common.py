@@ -298,7 +298,7 @@ def build_parser(
     )
     parser.add_argument(
         "--loader-module",
-        default=None,
+        default="src.data.real_loader",
         help="External data module that provides (train_loader, val_loader).",
     )
     parser.add_argument(

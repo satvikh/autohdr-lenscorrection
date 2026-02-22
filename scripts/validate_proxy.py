@@ -125,7 +125,23 @@ def _build_gt_map(split_csv: Path, gt_root: str | None) -> dict[str, Path]:
 
 
 def _hardfail_total(config: dict) -> float:
-    fail_policy = str(config.get("aggregation", {}).get("fail_policy", "exclude"))
+    hcfg = config.get("hardfail", {}) if isinstance(config, dict) else {}
+    acfg = config.get("aggregation", {}) if isinstance(config, dict) else {}
+    penalty_mode = str(hcfg.get("penalty_mode", "")).strip().lower()
+    penalty_value = float(hcfg.get("penalty_value", 0.05))
+
+    if penalty_mode == "clamp":
+        return float(max(0.0, min(1.0, penalty_value)))
+    if penalty_mode in {"zero", "score_zero"}:
+        return 0.0
+    if penalty_mode in {"score_neg_inf", "neg_inf"}:
+        return -1e9
+    if penalty_mode == "exclude":
+        return float("nan")
+
+    fail_policy = str(acfg.get("fail_policy", "penalize")).strip().lower()
+    if fail_policy in {"clamp", "penalize"}:
+        return float(max(0.0, min(1.0, penalty_value)))
     if fail_policy == "score_zero":
         return 0.0
     if fail_policy == "score_neg_inf":

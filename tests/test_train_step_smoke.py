@@ -7,6 +7,7 @@ import torch
 
 import src.train.engine as engine_module
 from src.losses.composite import CompositeLoss, config_for_stage
+from src.metrics.proxy_score import compute_proxy_score
 from src.models.hybrid_model import HybridLensCorrectionModel, HybridModelConfig
 from src.train.checkpointing import load_checkpoint, save_checkpoint
 from src.train.config_loader import load_train_config
@@ -201,6 +202,60 @@ def test_validation_probe_checksums_present(tmp_path: Path) -> None:
     val_metrics = engine.validate([_dummy_batch()], epoch=1)
     assert "probe_pred_checksum" in val_metrics
     assert isinstance(val_metrics["probe_pred_checksum"], str)
+
+
+def test_validate_reports_fullres_slice_proxy_metrics(tmp_path: Path, monkeypatch) -> None:
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+    sched_bundle = create_scheduler(
+        optimizer,
+        SchedulerConfig(name="none"),
+        total_steps=2,
+        steps_per_epoch=1,
+    )
+    engine = TrainerEngine(
+        model=model,
+        loss_fn=loss_fn,
+        stage=stage,
+        warp_backend=MockWarpBackend(),
+        optimizer=optimizer,
+        scheduler=sched_bundle.scheduler,
+        scheduler_step_interval=sched_bundle.step_interval,
+        config=EngineConfig(
+            epochs=1,
+            amp_enabled=False,
+            log_interval=0,
+            device="cpu",
+            max_val_steps=1,
+            checkpoint_dir=str(tmp_path / "runs"),
+            proxy_enabled=True,
+            proxy_module_path="src.metrics.proxy_score",
+            proxy_function_name="compute_proxy_score",
+            proxy_fullres_slice_enabled=True,
+            proxy_fullres_max_images=2,
+        ),
+    )
+
+    def fake_fullres(*, batch, remaining_budget):
+        _ = batch
+        assert remaining_budget == 2
+        return {
+            "proxy_total_score": [0.8, 0.6],
+            "proxy_edge": [0.7, 0.7],
+            "proxy_hard_fail": [0.0, 1.0],
+            "proxy_hard_fail_count": [1.0],
+            "proxy_count": [2.0],
+        }
+
+    monkeypatch.setattr(engine, "_maybe_proxy_fullres_for_batch", fake_fullres)
+    engine.proxy_scorer = compute_proxy_score
+
+    val_metrics = engine.validate([_dummy_batch()], epoch=1)
+    assert abs(float(val_metrics["proxy_fullres_slice_total_score"]) - 0.7) < 1e-8
+    assert float(val_metrics["proxy_fullres_slice_images_scored"]) == 2.0
+    assert abs(float(val_metrics["proxy_fullres_slice_hard_fail_rate"]) - 0.5) < 1e-8
 
 
 def test_stage1_disables_residual_path() -> None:

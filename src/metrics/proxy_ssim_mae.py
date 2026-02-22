@@ -25,6 +25,32 @@ def _global_ssim_luma(pred_rgb: np.ndarray, gt_rgb: np.ndarray, c1: float, c2: f
     return _safe_float(num / den)
 
 
+def _local_ssim_luma(pred_rgb: np.ndarray, gt_rgb: np.ndarray, *, c1: float, c2: float) -> float:
+    """Compute windowed SSIM using Gaussian local statistics (skimage-like fallback)."""
+    x = _to_gray(pred_rgb).astype(np.float32, copy=False)
+    y = _to_gray(gt_rgb).astype(np.float32, copy=False)
+    try:
+        import cv2  # type: ignore
+
+        mu_x = cv2.GaussianBlur(x, ksize=(11, 11), sigmaX=1.5, borderType=cv2.BORDER_REPLICATE)
+        mu_y = cv2.GaussianBlur(y, ksize=(11, 11), sigmaX=1.5, borderType=cv2.BORDER_REPLICATE)
+        mu_x2 = mu_x * mu_x
+        mu_y2 = mu_y * mu_y
+        mu_xy = mu_x * mu_y
+
+        sigma_x2 = cv2.GaussianBlur(x * x, ksize=(11, 11), sigmaX=1.5, borderType=cv2.BORDER_REPLICATE) - mu_x2
+        sigma_y2 = cv2.GaussianBlur(y * y, ksize=(11, 11), sigmaX=1.5, borderType=cv2.BORDER_REPLICATE) - mu_y2
+        sigma_xy = cv2.GaussianBlur(x * y, ksize=(11, 11), sigmaX=1.5, borderType=cv2.BORDER_REPLICATE) - mu_xy
+
+        num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
+        den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
+        den = np.maximum(den, 1e-12)
+        ssim_map = num / den
+        return _safe_float(float(np.mean(ssim_map)))
+    except Exception:
+        return _global_ssim_luma(pred_rgb, gt_rgb, c1=c1, c2=c2)
+
+
 def compute_ssim(pred, gt, config=None) -> float:
     """Compute SSIM in [0, 1], using skimage when available with global fallback."""
     cfg = config or {}
@@ -47,7 +73,7 @@ def compute_ssim(pred, gt, config=None) -> float:
             score = float(ssim_fn(pred_luma, gt_luma))
         return _safe_float(score)
     except Exception:
-        return _global_ssim_luma(pred_np, gt_np, c1, c2)
+        return _local_ssim_luma(pred_np, gt_np, c1=c1, c2=c2)
 
 
 def compute_mae(pred, gt, config=None) -> float:

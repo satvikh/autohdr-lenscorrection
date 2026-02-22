@@ -122,6 +122,126 @@ def gradient_orientation_cosine_loss(
     return out
 
 
+def _to_luma(image: Tensor) -> Tensor:
+    if image.ndim != 4:
+        raise ValueError("image must have shape [B,C,H,W]")
+    if image.shape[1] == 1:
+        return image
+    if image.shape[1] >= 3:
+        r = image[:, 0:1]
+        g = image[:, 1:2]
+        b = image[:, 2:3]
+        return (0.299 * r) + (0.587 * g) + (0.114 * b)
+    return image.mean(dim=1, keepdim=True)
+
+
+def _orientation_histogram_from_gradients(
+    gx: Tensor,
+    gy: Tensor,
+    *,
+    bins: int,
+    eps: float,
+    magnitude_power: float,
+    mask: Tensor | None = None,
+) -> Tensor:
+    if gx.shape != gy.shape:
+        raise ValueError("gx and gy must have identical shape")
+    if gx.ndim != 4 or gx.shape[1] != 1:
+        raise ValueError("gx and gy must have shape [B,1,H,W]")
+    if bins <= 1:
+        raise ValueError("bins must be > 1")
+
+    mag = torch.sqrt((gx * gx) + (gy * gy) + eps)
+    theta = torch.remainder(torch.atan2(gy, gx), torch.pi)
+
+    if mask is not None:
+        if mask.shape != mag.shape:
+            raise ValueError("mask must have same shape as gradient tensors")
+        weights = torch.pow(torch.clamp(mag, min=eps), float(magnitude_power)) * mask
+    else:
+        weights = torch.pow(torch.clamp(mag, min=eps), float(magnitude_power))
+
+    b, _, h, w = theta.shape
+    n = h * w
+    theta_flat = theta.view(b, n)
+    w_flat = weights.view(b, n)
+
+    pos = theta_flat / torch.pi * float(bins)
+    idx0 = torch.floor(pos).to(dtype=torch.long) % bins
+    frac = torch.clamp(pos - torch.floor(pos), min=0.0, max=1.0)
+    idx1 = (idx0 + 1) % bins
+    w0 = (1.0 - frac) * w_flat
+    w1 = frac * w_flat
+
+    hist = torch.zeros((b, bins), device=gx.device, dtype=gx.dtype)
+    hist.scatter_add_(1, idx0, w0)
+    hist.scatter_add_(1, idx1, w1)
+
+    hist = hist / torch.clamp(hist.sum(dim=1, keepdim=True), min=eps)
+    return hist
+
+
+def line_orientation_hist_loss(
+    pred: Tensor,
+    target: Tensor,
+    *,
+    bins: int = 36,
+    eps: float = 1e-6,
+    magnitude_power: float = 1.0,
+    target_mag_quantile: float = 0.70,
+    target_mag_temperature: float = 0.05,
+) -> Tensor:
+    """Line-orientation histogram mismatch surrogate.
+
+    This is a differentiable line-straightness proxy:
+    - convert to luminance
+    - compute Sobel orientations
+    - build weighted orientation histograms in [0, pi)
+    - minimize (1 - cosine(hist_pred, hist_target))
+    """
+    pred_f, target_f = _as_float_image_pair(pred, target)
+    pred_l = _to_luma(pred_f)
+    target_l = _to_luma(target_f)
+
+    pred_gx, pred_gy = sobel_gradients(pred_l)
+    tgt_gx, tgt_gy = sobel_gradients(target_l)
+
+    tgt_mag = gradient_magnitude(tgt_gx, tgt_gy, eps=eps)
+    q = float(max(min(target_mag_quantile, 1.0), 0.0))
+    if q > 0.0:
+        thr = torch.quantile(tgt_mag.detach().reshape(tgt_mag.shape[0], -1), q=q, dim=1)
+        thr = thr.view(-1, 1, 1, 1)
+        temp = max(float(target_mag_temperature), eps)
+        line_mask = torch.sigmoid((tgt_mag - thr) / temp)
+    else:
+        line_mask = torch.ones_like(tgt_mag)
+
+    hist_pred = _orientation_histogram_from_gradients(
+        pred_gx,
+        pred_gy,
+        bins=int(bins),
+        eps=eps,
+        magnitude_power=float(magnitude_power),
+        mask=line_mask,
+    )
+    hist_tgt = _orientation_histogram_from_gradients(
+        tgt_gx,
+        tgt_gy,
+        bins=int(bins),
+        eps=eps,
+        magnitude_power=float(magnitude_power),
+        mask=line_mask,
+    )
+
+    dot = (hist_pred * hist_tgt).sum(dim=1)
+    denom = torch.clamp(torch.linalg.vector_norm(hist_pred, dim=1) * torch.linalg.vector_norm(hist_tgt, dim=1), min=eps)
+    cos = torch.clamp(dot / denom, min=-1.0, max=1.0)
+    out = torch.nan_to_num(1.0 - cos, nan=0.0, posinf=2.0, neginf=2.0).mean()
+    if not torch.isfinite(out):
+        raise RuntimeError("line_orientation_hist_loss produced non-finite value")
+    return out
+
+
 def resize_pair_explicit(pred: Tensor, target: Tensor, *, scale: float) -> tuple[Tensor, Tensor]:
     """Explicitly resize prediction and target to a common scale.
 

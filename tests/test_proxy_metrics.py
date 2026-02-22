@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image
 
 from src.metrics.proxy_edge import compute_edge_score
+from src.metrics.proxy_line import compute_line_score
 from src.metrics.proxy_score import aggregate_scores, compute_proxy_score
 from src.metrics.proxy_ssim_mae import compute_mae, compute_ssim
 
@@ -17,8 +18,8 @@ from src.metrics.proxy_ssim_mae import compute_mae, compute_ssim
 def _base_config() -> dict:
     return {
         "weights": {"edge": 0.40, "line": 0.22, "grad": 0.18, "ssim": 0.15, "mae": 0.05},
-        "hardfail": {"penalty_mode": "clamp", "penalty_value": 0.05, "mae_max": 0.9},
-        "aggregation": {"fail_policy": "exclude"},
+        "hardfail": {"mae_max": 0.9, "edge_min": 0.01, "regional_max": 0.95},
+        "aggregation": {"fail_policy": "score_zero"},
     }
 
 
@@ -126,6 +127,19 @@ def test_edge_score_blank_vs_textured_is_lower() -> None:
     assert score_mismatch < score_same
 
 
+def test_line_score_orientation_mismatch_is_lower() -> None:
+    gt = np.zeros((64, 64, 3), dtype=np.float32)
+    gt[:, ::4, :] = 1.0  # vertical dominant lines
+    pred = np.zeros_like(gt)
+    pred[::4, :, :] = 1.0  # horizontal dominant lines
+
+    score_same = compute_line_score(gt, gt.copy(), {})
+    score_mismatch = compute_line_score(pred, gt, {})
+
+    assert score_same >= 0.95
+    assert score_mismatch < score_same
+
+
 def test_hardfail_fail_policy_behavior() -> None:
     gt = np.ones((16, 16, 3), dtype=np.float32)
     pred = gt.copy()
@@ -146,14 +160,57 @@ def test_hardfail_fail_policy_behavior() -> None:
         assert out["flags"]["hardfail"] is True
         assert set(out["subscores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
         assert set(out["sub_scores"].keys()) == {"edge", "line", "grad", "ssim", "mae"}
-        assert all(np.isnan(v) for v in out["subscores"].values())
-        assert all(np.isnan(v) for v in out["sub_scores"].values())
+        assert all(v == 0.0 for v in out["subscores"].values())
+        assert all(v == 0.0 for v in out["sub_scores"].values())
         if np.isnan(expected_total):
             assert np.isnan(out["total_score"])
             assert np.isnan(out["total"])
         else:
             assert out["total_score"] == expected_total
             assert out["total"] == expected_total
+
+
+def test_hardfail_penalty_mode_clamp_overrides_fail_policy() -> None:
+    gt = np.ones((16, 16, 3), dtype=np.float32)
+    pred = gt.copy()
+    pred[0, 0, 0] = np.nan
+    cfg = _base_config()
+    cfg["aggregation"] = {"fail_policy": "score_zero"}
+    cfg["hardfail"] = {"penalty_mode": "clamp", "penalty_value": 0.07}
+    out = compute_proxy_score(pred, gt, cfg)
+    assert out["flags"]["hardfail"] is True
+    assert abs(float(out["total_score"]) - 0.07) < 1e-9
+
+
+def test_hardfail_regional_max_threshold_is_enforced() -> None:
+    gt = np.zeros((32, 32, 3), dtype=np.float32)
+    pred = gt.copy()
+    pred[8:24, 8:24, :] = 1.0
+    cfg = _base_config()
+    cfg["hardfail"] = {"mae_max": 1.0, "edge_min": 0.0, "regional_max": 0.20, "regional_window": 8}
+
+    out = compute_proxy_score(pred, gt, cfg)
+    assert out["flags"]["hardfail"] is True
+    assert "regional_max_diff_too_high" in out["flags"]["reasons"]
+    assert out["total_score"] == 0.0
+
+
+def test_hardfail_edge_min_threshold_is_enforced() -> None:
+    gt = np.zeros((64, 64, 3), dtype=np.float32)
+    gt[16:48, 16:48, :] = 1.0
+    pred = np.zeros_like(gt)
+    cfg = _base_config()
+    cfg["hardfail"] = {
+        "mae_max": 1.0,
+        "edge_min": 0.20,
+        "regional_max": 1.0,
+        "gt_std_min": 2.0,
+    }
+
+    out = compute_proxy_score(pred, gt, cfg)
+    assert out["flags"]["hardfail"] is True
+    assert "edge_similarity_below_min" in out["flags"]["reasons"]
+    assert out["total_score"] == 0.0
 
 
 def test_weighting_with_disabled_metric_is_renormalized() -> None:

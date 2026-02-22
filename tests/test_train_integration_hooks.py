@@ -55,3 +55,55 @@ def test_proxy_metrics_with_builtin_scorer_handles_batched_tensors() -> None:
     assert "proxy_total_score" in out
     assert out["proxy_total_score"] > 0.9
     assert out.get("proxy_hard_fail", 1.0) == 0.0
+
+
+def test_proxy_metrics_with_builtin_scorer_handles_batch_size_one() -> None:
+    pred = torch.rand(1, 3, 16, 16)
+    gt = pred.clone()
+
+    out = compute_proxy_metrics_for_batch(scorer=compute_proxy_score, pred_batch=pred, target_batch=gt, config={})
+
+    assert "proxy_total_score" in out
+    assert out["proxy_total_score"] > 0.9
+    assert out.get("proxy_hard_fail", 1.0) == 0.0
+
+
+def test_proxy_metrics_hardfail_nonfinite_totals_penalize_to_zero() -> None:
+    def scorer(pred: torch.Tensor, gt: torch.Tensor, config=None):
+        _ = pred
+        _ = gt
+        _ = config
+        return {
+            "total_score": float("nan"),
+            "sub_scores": {"edge": float("nan")},
+            "flags": {"hard_fail": True, "reasons": ["synthetic_fail"]},
+        }
+
+    pred = torch.rand(2, 3, 16, 16)
+    gt = torch.rand(2, 3, 16, 16)
+    out = compute_proxy_metrics_for_batch(
+        scorer=scorer,
+        pred_batch=pred,
+        target_batch=gt,
+        config={"hardfail": {"penalty_mode": "score_zero"}},
+    )
+    assert out["proxy_total_score"] == 0.0
+    assert out.get("proxy_hard_fail", 0.0) == 1.0
+
+
+def test_proxy_metrics_hardfail_nonfinite_totals_default_to_clamp_penalty() -> None:
+    def scorer(pred: torch.Tensor, gt: torch.Tensor, config=None):
+        _ = pred
+        _ = gt
+        _ = config
+        return {
+            "total_score": float("nan"),
+            "sub_scores": {"edge": float("nan")},
+            "flags": {"hard_fail": True, "reasons": ["synthetic_fail"]},
+        }
+
+    pred = torch.rand(2, 3, 16, 16)
+    gt = torch.rand(2, 3, 16, 16)
+    out = compute_proxy_metrics_for_batch(scorer=scorer, pred_batch=pred, target_batch=gt, config={})
+    assert abs(float(out["proxy_total_score"]) - 0.05) < 1e-8
+    assert out.get("proxy_hard_fail", 0.0) == 1.0

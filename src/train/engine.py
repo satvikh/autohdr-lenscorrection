@@ -7,6 +7,8 @@ from pathlib import Path
 import time
 from typing import Any, Iterable
 
+import numpy as np
+from PIL import Image
 import torch
 from torch import Tensor
 from torch import nn
@@ -14,7 +16,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.losses.composite import CompositeLoss
-from src.train.amp_utils import build_grad_scaler
+from src.train.amp_utils import autocast_context, build_grad_scaler
 from src.train.checkpointing import save_checkpoint
 from src.train.debug_dump import dump_debug_triplet
 from src.train.logging_utils import RunningAverage, tensor_dict_to_float
@@ -39,6 +41,8 @@ class EngineConfig:
     proxy_module_path: str | None = None
     proxy_function_name: str = "compute_proxy_score"
     proxy_config: Any | None = None
+    proxy_fullres_slice_enabled: bool = False
+    proxy_fullres_max_images: int = 0
 
     debug_dump_dir: str | None = None
     debug_dump_max_images: int = 0
@@ -223,6 +227,23 @@ class TrainerEngine:
             return float("nan")
         return float(sum(values) / len(values))
 
+    @staticmethod
+    def _as_path_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value]
+        return [str(value)]
+
+    @staticmethod
+    def _load_rgb_tensor(path: str | Path, *, device: torch.device, dtype: torch.dtype) -> Tensor:
+        with Image.open(path) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+        return t.contiguous()
+
     def _collect_base_metrics(self, out_components: dict[str, Tensor], diagnostics: dict[str, float]) -> dict[str, float]:
         metrics = tensor_dict_to_float(out_components)
         metrics.update(diagnostics)
@@ -377,6 +398,70 @@ class TrainerEngine:
             # Training must remain resilient even when proxy integration is unstable.
             return {"proxy_error": 1.0}
 
+    def _maybe_proxy_fullres_for_batch(
+        self,
+        *,
+        batch: dict[str, Any],
+        remaining_budget: int,
+    ) -> dict[str, list[float]]:
+        if self.proxy_scorer is None:
+            return {}
+        if remaining_budget <= 0:
+            return {}
+
+        input_paths = self._as_path_list(batch.get("input_path"))
+        target_paths = self._as_path_list(batch.get("target_path"))
+        if not input_paths or not target_paths:
+            return {}
+
+        n = min(len(input_paths), len(target_paths), remaining_budget)
+        out: dict[str, list[float]] = {}
+        hard_fail_hits = 0
+
+        for i in range(n):
+            in_path = input_paths[i]
+            gt_path = target_paths[i]
+            try:
+                input_full = self._load_rgb_tensor(in_path, device=self.device, dtype=torch.float32)
+                target_full = self._load_rgb_tensor(gt_path, device=self.device, dtype=torch.float32)
+                with torch.no_grad():
+                    with autocast_context(enabled=self.config.amp_enabled, device=self.device):
+                        raw = self.model(input_full)
+                    if not isinstance(raw, dict) or "params" not in raw:
+                        continue
+                    params = raw["params"]
+                    residual = raw.get("residual_flow_lowres")
+                    if residual is None:
+                        residual = raw.get("residual_flow")
+                    if not torch.is_tensor(params):
+                        continue
+                    if self.config.amp_enabled:
+                        params = params.float()
+                        residual = residual.float() if torch.is_tensor(residual) else None
+                    use_residual = self.stage.use_residual and torch.is_tensor(residual)
+                    warp_out = self.warp_backend.warp(input_full.float(), params.float(), residual if use_residual else None)
+                    pred_full = warp_out.get("pred_image")
+                    if not torch.is_tensor(pred_full):
+                        continue
+
+                proxy = compute_proxy_metrics_for_batch(
+                    scorer=self.proxy_scorer,
+                    pred_batch=pred_full,
+                    target_batch=target_full,
+                    config=self.config.proxy_config,
+                )
+                for k, v in proxy.items():
+                    out.setdefault(k, []).append(float(v))
+                if float(proxy.get("proxy_hard_fail", 0.0)) > 0.5:
+                    hard_fail_hits += 1
+            except Exception:
+                continue
+
+        if n > 0:
+            out.setdefault("proxy_hard_fail_count", []).append(float(hard_fail_hits))
+            out.setdefault("proxy_count", []).append(float(n))
+        return out
+
     def _maybe_debug_dump(self, *, prefix: str, input_image: Tensor, pred_image: Tensor, target_image: Tensor) -> None:
         if not self.config.debug_dump_dir:
             return
@@ -402,7 +487,14 @@ class TrainerEngine:
             candidate = float("nan")
         if torch.isfinite(torch.tensor(candidate)):
             return candidate
-        # Backward-compatible fallback keeps historical behavior.
+        # Prefer proxy fallback before pure loss when selecting by proxy metrics.
+        try:
+            proxy_fallback = float(val_metrics.get("proxy_total_score", float("nan")))
+        except Exception:
+            proxy_fallback = float("nan")
+        if torch.isfinite(torch.tensor(proxy_fallback)):
+            return proxy_fallback
+        # Backward-compatible final fallback.
         try:
             fallback = float(val_metrics.get("total", float("nan")))
         except Exception:
@@ -603,6 +695,15 @@ class TrainerEngine:
         probe_component_count = 0
         probe_collected = 0
 
+        fullres_enabled = (
+            self.proxy_scorer is not None
+            and bool(self.config.proxy_fullres_slice_enabled)
+            and int(self.config.proxy_fullres_max_images) > 0
+        )
+        fullres_budget = max(int(self.config.proxy_fullres_max_images), 0)
+        fullres_metrics_acc: dict[str, list[float]] = {}
+        fullres_scored = 0
+
         for step_idx, batch in enumerate(val_loader, start=1):
             if self.config.max_val_steps is not None and step_idx > self.config.max_val_steps:
                 break
@@ -627,7 +728,18 @@ class TrainerEngine:
                 val_samples_processed += int(target.shape[0])
                 proxy_metrics = self._maybe_proxy_metrics(out.pred_image, target)
                 metrics.update(proxy_metrics)
-                val_proxy_predictions += int(target.shape[0])
+                if "proxy_total_score" in proxy_metrics:
+                    val_proxy_predictions += int(target.shape[0])
+                if fullres_enabled and fullres_scored < fullres_budget:
+                    remaining = max(fullres_budget - fullres_scored, 0)
+                    fullres_batch = self._maybe_proxy_fullres_for_batch(batch=batch, remaining_budget=remaining)
+                    for k, vals in fullres_batch.items():
+                        if not isinstance(vals, list):
+                            continue
+                        fullres_metrics_acc.setdefault(k, []).extend([float(v) for v in vals])
+                    count_vals = fullres_batch.get("proxy_count", [])
+                    if isinstance(count_vals, list):
+                        fullres_scored += int(round(sum(float(v) for v in count_vals)))
 
                 if isinstance(batch.get("input_image"), torch.Tensor):
                     self._maybe_debug_dump(
@@ -663,6 +775,32 @@ class TrainerEngine:
         avg["val_batches_processed"] = float(val_batches_processed)
         avg["val_samples_processed"] = float(val_samples_processed)
         avg["val_proxy_predictions_processed"] = float(val_proxy_predictions)
+
+        if fullres_enabled:
+            count_vals = fullres_metrics_acc.get("proxy_count", [])
+            hard_fail_count_vals = fullres_metrics_acc.get("proxy_hard_fail_count", [])
+            n_scored = int(round(sum(count_vals))) if count_vals else int(fullres_scored)
+            avg["proxy_fullres_slice_images_scored"] = float(n_scored)
+
+            for src_key in (
+                "proxy_total_score",
+                "proxy_edge",
+                "proxy_line",
+                "proxy_grad",
+                "proxy_ssim",
+                "proxy_mae",
+                "proxy_hard_fail",
+            ):
+                vals = fullres_metrics_acc.get(src_key, [])
+                dst_key = f"proxy_fullres_slice_{src_key.replace('proxy_', '')}"
+                avg[dst_key] = float(sum(vals) / len(vals)) if vals else float("nan")
+
+            hard_fail_count = float(sum(hard_fail_count_vals)) if hard_fail_count_vals else float("nan")
+            avg["proxy_fullres_slice_hard_fail_count"] = hard_fail_count
+            if n_scored > 0 and np.isfinite(hard_fail_count):
+                avg["proxy_fullres_slice_hard_fail_rate"] = hard_fail_count / float(n_scored)
+            else:
+                avg["proxy_fullres_slice_hard_fail_rate"] = float("nan")
 
         if probe_enabled and probe_collected > 0:
             pred_probe = torch.cat(probe_pred, dim=0)
@@ -740,6 +878,9 @@ class TrainerEngine:
                 "proxy_ssim",
                 "proxy_mae",
                 "proxy_hard_fail",
+                "proxy_fullres_slice_total_score",
+                "proxy_fullres_slice_hard_fail_rate",
+                "proxy_fullres_slice_images_scored",
                 "val_samples_processed",
                 "val_proxy_predictions_processed",
                 "probe_proxy_total_score",
@@ -811,6 +952,7 @@ class TrainerEngine:
                                 "best_metric_name": self.config.best_metric_name,
                                 "best_metric_mode": self._best_metric_mode,
                                 "proxy_total_score": final_val.get("proxy_total_score"),
+                                "proxy_fullres_slice_total_score": final_val.get("proxy_fullres_slice_total_score"),
                             },
                         )
 
@@ -829,6 +971,9 @@ class TrainerEngine:
                         "best_metric_name": self.config.best_metric_name,
                         "best_metric_mode": self._best_metric_mode,
                         "proxy_total_score": final_val.get("proxy_total_score") if final_val else None,
+                        "proxy_fullres_slice_total_score": (
+                            final_val.get("proxy_fullres_slice_total_score") if final_val else None
+                        ),
                     },
                 )
         except KeyboardInterrupt:
@@ -860,4 +1005,7 @@ class TrainerEngine:
             "best_metric_mode": self._best_metric_mode,
             "best_metric_value": float(self.best_val_loss) if self.best_val_loss is not None else float("nan"),
             "val_proxy_total": final_val.get("proxy_total_score", float("nan")) if final_val else float("nan"),
+            "val_proxy_fullres_slice_total": (
+                final_val.get("proxy_fullres_slice_total_score", float("nan")) if final_val else float("nan")
+            ),
         }

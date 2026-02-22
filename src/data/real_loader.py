@@ -330,7 +330,7 @@ def build_train_val_loaders(stage: str) -> tuple[DataLoader, DataLoader]:
     _ensure_split_csvs(cfg)
 
     train_ds = PairedLensDataset(cfg.train_csv, transforms=_build_train_transforms(cfg))
-    val_ds = PairedLensDataset(cfg.val_csv, transforms=_build_val_transforms(cfg))
+    val_ds = PairedLensDataset(cfg.val_csv, transforms=_build_val_transforms(cfg), return_paths=True)
 
     common_loader_kwargs = {
         "batch_size": cfg.batch_size,

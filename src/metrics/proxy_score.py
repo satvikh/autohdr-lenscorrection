@@ -19,7 +19,8 @@ def _weights(config) -> Dict[str, float]:
     cfg = config or {}
     defaults = {"edge": 0.40, "line": 0.22, "grad": 0.18, "ssim": 0.15, "mae": 0.05}
     custom = cfg.get("weights", {}) if isinstance(cfg, dict) else {}
-    merged = {**defaults, **custom}
+    merged_raw = {**defaults, **custom}
+    merged = {k: max(float(v), 0.0) for k, v in merged_raw.items()}
     total = sum(float(v) for v in merged.values())
     if total <= 0:
         return defaults
@@ -44,12 +45,29 @@ def _metric_functions() -> dict[str, Callable]:
 
 def _hardfail_total(config) -> float:
     cfg = config or {}
+    hcfg = cfg.get("hardfail", {}) if isinstance(cfg, dict) else {}
+    penalty_mode = str(hcfg.get("penalty_mode", "")).strip().lower()
+    penalty_value = float(hcfg.get("penalty_value", 0.05))
+
+    if penalty_mode == "clamp":
+        return float(np.clip(penalty_value, 0.0, 1.0))
+    if penalty_mode in {"zero", "score_zero"}:
+        return 0.0
+    if penalty_mode in {"score_neg_inf", "neg_inf"}:
+        return -1e9
+    if penalty_mode == "exclude":
+        return float("nan")
+
     acfg = cfg.get("aggregation", {}) if isinstance(cfg, dict) else {}
-    fail_policy = str(acfg.get("fail_policy", "exclude"))
+    fail_policy = str(acfg.get("fail_policy", "penalize")).strip().lower()
+    if fail_policy in {"clamp", "penalize"}:
+        return float(np.clip(penalty_value, 0.0, 1.0))
     if fail_policy == "score_zero":
         return 0.0
     if fail_policy == "score_neg_inf":
         return -1e9
+    if fail_policy == "exclude":
+        return float("nan")
     return float("nan")
 
 
@@ -82,7 +100,7 @@ def compute_proxy_score(pred, gt, config) -> dict:
     if hardfail:
         return _make_report(
             total=_hardfail_total(cfg),
-            subscores={k: float("nan") for k in _METRIC_KEYS},
+            subscores={k: 0.0 for k in _METRIC_KEYS},
             hard_fail=True,
             reasons=reasons,
         )
@@ -137,7 +155,7 @@ def aggregate_scores(rows: List[dict], config) -> dict:
 
     cfg = config or {}
     acfg = cfg.get("aggregation", {}) if isinstance(cfg, dict) else {}
-    fail_policy = str(acfg.get("fail_policy", "exclude"))
+    fail_policy = str(acfg.get("fail_policy", "penalize")).strip().lower()
 
     totals = np.array([float(r.get("total_score", r.get("total", float("nan")))) for r in rows], dtype=np.float64)
     fail_count = int(

@@ -3,9 +3,10 @@ use_charbonnier: true
 charbonnier_eps: 0.001
 multiscale_scales: [1.0]
 
-pixel_weight: 0.10
+pixel_weight: 0.05
 ssim_weight: 0.15
 edge_weight: 0.40
+line_weight: 0.22
 grad_orient_weight: 0.18
 
 flow_tv_weight: 0.0

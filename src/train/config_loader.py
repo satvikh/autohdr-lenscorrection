@@ -17,6 +17,36 @@ VALID_WARP_BACKENDS = {"person1", "mock"}
 VALID_SCHEDULERS = {"none", "cosine", "onecycle"}
 
 
+def _default_proxy_config() -> dict[str, Any]:
+    return {
+        "weights": {"edge": 0.40, "line": 0.22, "grad": 0.18, "ssim": 0.15, "mae": 0.05},
+        "metrics": {"edge": True, "line": True, "grad": True, "ssim": True, "mae": True},
+        "edge_scales": [1.0, 0.5],
+        "line_scales": [1.0, 0.5],
+        "grad_scales": [1.0, 0.5],
+        "line_use_lsd": False,
+        "image": {"require_same_size": True},
+        "aggregation": {"fail_policy": "score_zero"},
+        "hardfail": {
+            "regional_max": 0.45,
+            "regional_window": 64,
+            "edge_min": 0.03,
+            "penalty_mode": "score_zero",
+            "penalty_value": 0.0,
+        },
+    }
+
+
+def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge_dicts(out[k], v)  # type: ignore[arg-type]
+        else:
+            out[k] = v
+    return out
+
+
 def _load_yaml(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     with p.open("r", encoding="utf-8") as f:
@@ -108,6 +138,7 @@ def load_loss_config(path: str | Path) -> CompositeLossConfig:
         pixel_weight=float(raw.get("pixel_weight", 0.10)),
         ssim_weight=float(raw.get("ssim_weight", 0.15)),
         edge_weight=float(raw.get("edge_weight", 0.40)),
+        line_weight=float(raw.get("line_weight", 0.22)),
         grad_orient_weight=float(raw.get("grad_orient_weight", 0.18)),
         flow_tv_weight=float(raw.get("flow_tv_weight", 0.0)),
         flow_mag_weight=float(raw.get("flow_mag_weight", 0.0)),
@@ -120,6 +151,7 @@ def load_loss_config(path: str | Path) -> CompositeLossConfig:
         "pixel_weight",
         "ssim_weight",
         "edge_weight",
+        "line_weight",
         "grad_orient_weight",
         "flow_tv_weight",
         "flow_mag_weight",
@@ -150,6 +182,18 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
     if best_metric_mode not in {"min", "max"}:
         raise ValueError(f"train.best_metric_mode must be 'min' or 'max', got '{best_metric_mode}'")
 
+    proxy_enabled = bool(raw.get("proxy_enabled", False))
+    proxy_raw = raw.get("proxy_config")
+    if proxy_enabled:
+        if proxy_raw is None:
+            proxy_config: Any | None = _default_proxy_config()
+        elif isinstance(proxy_raw, dict):
+            proxy_config = _merge_dicts(_default_proxy_config(), proxy_raw)
+        else:
+            raise ValueError("train.proxy_config must be a mapping when proxy_enabled=true")
+    else:
+        proxy_config = proxy_raw
+
     engine = EngineConfig(
         epochs=int(raw.get("epochs", 1)),
         amp_enabled=bool(raw.get("amp_enabled", False)),
@@ -159,10 +203,12 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         max_steps_per_epoch=int(raw.get("max_steps_per_epoch")) if raw.get("max_steps_per_epoch") is not None else None,
         max_val_steps=int(raw.get("max_val_steps")) if raw.get("max_val_steps") is not None else None,
         checkpoint_dir=str(raw.get("checkpoint_dir", "outputs/runs")),
-        proxy_enabled=bool(raw.get("proxy_enabled", False)),
+        proxy_enabled=proxy_enabled,
         proxy_module_path=str(raw.get("proxy_module_path")) if raw.get("proxy_module_path") is not None else None,
         proxy_function_name=str(raw.get("proxy_function_name", "compute_proxy_score")),
-        proxy_config=raw.get("proxy_config"),
+        proxy_config=proxy_config,
+        proxy_fullres_slice_enabled=bool(raw.get("proxy_fullres_slice_enabled", False)),
+        proxy_fullres_max_images=int(raw.get("proxy_fullres_max_images", 0)),
         debug_dump_dir=str(raw.get("debug_dump_dir")) if raw.get("debug_dump_dir") is not None else None,
         debug_dump_max_images=int(raw.get("debug_dump_max_images", 0)),
         fail_on_nonfinite_loss=bool(raw.get("fail_on_nonfinite_loss", True)),
@@ -193,6 +239,7 @@ def load_train_config(path: str | Path) -> tuple[EngineConfig, OptimConfig, Sche
         raise ValueError("train.max_val_steps must be > 0 when set")
     if engine.grad_clip_norm is not None:
         _assert_non_negative("train.grad_clip_norm", float(engine.grad_clip_norm))
+    _assert_non_negative("train.proxy_fullres_max_images", float(engine.proxy_fullres_max_images))
     _assert_non_negative("train.param_saturation_warn_threshold", engine.param_saturation_warn_threshold)
     _assert_non_negative("train.residual_warn_abs_max_px", engine.residual_warn_abs_max_px)
     _assert_positive("train.debug_metric_precision", float(engine.debug_metric_precision))

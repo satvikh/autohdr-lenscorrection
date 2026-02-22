@@ -96,16 +96,46 @@ def _git_commit() -> str | None:
 
 
 def _load_ids_from_split(split_csv: Path) -> list[str]:
-    ids = []
+    ids, _ = _load_ids_from_split_with_refs(split_csv)
+    return ids
+
+
+def _resolve_maybe_relative_path(raw_path: str, *, split_parent: Path) -> Path:
+    p = Path(raw_path)
+    if p.is_absolute():
+        return p
+    from_split = split_parent / p
+    if from_split.exists():
+        return from_split
+    from_cwd = Path.cwd() / p
+    if from_cwd.exists():
+        return from_cwd
+    return from_split
+
+
+def _load_ids_from_split_with_refs(split_csv: Path) -> tuple[list[str], dict[str, Path] | None]:
+    ids: list[str] = []
+    refs: dict[str, Path] = {}
+    ref_cols = ("input_path", "source_path", "image_path", "original_path", "distorted_path")
     with split_csv.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None or "image_id" not in reader.fieldnames:
             raise ValueError("split_csv must contain 'image_id' column")
+        present_ref_cols = [c for c in ref_cols if c in set(reader.fieldnames)]
+        split_parent = split_csv.parent
         for row in reader:
             image_id = str(row.get("image_id", "")).strip()
             if image_id:
                 ids.append(image_id)
-    return sorted(set(ids))
+                for col in present_ref_cols:
+                    raw = str(row.get(col, "")).strip()
+                    if raw:
+                        refs[image_id] = _resolve_maybe_relative_path(raw, split_parent=split_parent)
+                        break
+    uniq_ids = sorted(set(ids))
+    if not refs:
+        return uniq_ids, None
+    return uniq_ids, refs
 
 
 def _load_ids_from_file(ids_file: Path) -> list[str]:
@@ -186,19 +216,24 @@ def run(args: argparse.Namespace) -> int:
     pred_dir = Path(args.pred_dir)
     infer_meta = _load_inference_run_metadata(pred_dir)
 
+    ref_map: dict[str, Path] | None = None
     if args.split_csv:
-        required_ids = _load_ids_from_split(Path(args.split_csv))
+        required_ids, ref_map = _load_ids_from_split_with_refs(Path(args.split_csv))
     else:
         required_ids = _load_ids_from_file(Path(args.ids_file))
 
     filename_res = check_filenames(pred_dir, required_ids, config)
-    # No gt_root/gt_map expected for submission packaging; decode checks still run.
+    image_cfg = dict(config.get("image", {})) if isinstance(config.get("image", {}), dict) else {}
+    requested_same_size = bool(image_cfg.get("require_same_size", True))
+    effective_same_size = bool(requested_same_size and isinstance(ref_map, dict) and len(ref_map) > 0)
+    # If no reference path map is available, keep decode checks and disable size check.
+    image_cfg["require_same_size"] = effective_same_size
     image_res = check_images(
         pred_dir,
         required_ids,
         gt_root=None,
-        config={**config, "image": {**config.get("image", {}), "require_same_size": False}},
-        gt_map=None,
+        config={**config, "image": image_cfg},
+        gt_map=ref_map,
     )
 
     qa_ok = bool(filename_res.get("ok", False) and image_res.get("ok", False))
@@ -222,6 +257,11 @@ def run(args: argparse.Namespace) -> int:
             "config_hash": config_hash,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "git_commit": _git_commit(),
+        },
+        "size_check": {
+            "requested_require_same_size": requested_same_size,
+            "effective_require_same_size": effective_same_size,
+            "reference_map_count": int(len(ref_map)) if isinstance(ref_map, dict) else 0,
         },
     }
 

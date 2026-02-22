@@ -8,7 +8,12 @@ from torch import Tensor
 from torch import nn
 
 from src.losses.flow_regularizers import flow_curvature_loss, flow_magnitude_loss, total_variation_loss
-from src.losses.gradients import edge_magnitude_loss, gradient_orientation_cosine_loss, multiscale_average
+from src.losses.gradients import (
+    edge_magnitude_loss,
+    gradient_orientation_cosine_loss,
+    line_orientation_hist_loss,
+    multiscale_average,
+)
 from src.losses.jacobian_loss import jacobian_foldover_penalty
 from src.losses.pixel import CharbonnierLoss, l1_loss
 from src.losses.ssim_loss import SSIMLoss
@@ -24,6 +29,7 @@ class CompositeLossConfig:
     pixel_weight: float = 0.10
     ssim_weight: float = 0.15
     edge_weight: float = 0.40
+    line_weight: float = 0.22
     grad_orient_weight: float = 0.18
 
     flow_tv_weight: float = 0.0
@@ -84,6 +90,7 @@ class CompositeLoss(nn.Module):
         pix = self._multiscale(pred_image, target_image, self._image_pixel_loss)
         ssim = self._multiscale(pred_image, target_image, self.ssim_loss)
         edge = self._multiscale(pred_image, target_image, edge_magnitude_loss)
+        line = self._multiscale(pred_image, target_image, line_orientation_hist_loss)
         grad = self._multiscale(pred_image, target_image, gradient_orientation_cosine_loss)
 
         flow_tv = self._zeros_like_ref(pred_image)
@@ -102,6 +109,7 @@ class CompositeLoss(nn.Module):
             "pixel": pix,
             "ssim": ssim,
             "edge": edge,
+            "line": line,
             "grad_orient": grad,
             "flow_tv": flow_tv,
             "flow_mag": flow_mag,
@@ -110,6 +118,7 @@ class CompositeLoss(nn.Module):
             "pixel_weighted": self.config.pixel_weight * pix,
             "ssim_weighted": self.config.ssim_weight * ssim,
             "edge_weighted": self.config.edge_weight * edge,
+            "line_weighted": self.config.line_weight * line,
             "grad_orient_weighted": self.config.grad_orient_weight * grad,
             "flow_tv_weighted": self.config.flow_tv_weight * flow_tv,
             "flow_mag_weighted": self.config.flow_mag_weight * flow_mag,
@@ -121,6 +130,7 @@ class CompositeLoss(nn.Module):
             components["pixel_weighted"]
             + components["ssim_weighted"]
             + components["edge_weighted"]
+            + components["line_weighted"]
             + components["grad_orient_weighted"]
             + components["flow_tv_weighted"]
             + components["flow_mag_weighted"]
@@ -137,6 +147,11 @@ def config_for_stage(stage: str) -> CompositeLossConfig:
     if s == "stage1_param_only":
         return CompositeLossConfig(
             stage=s,
+            pixel_weight=0.05,
+            ssim_weight=0.15,
+            edge_weight=0.40,
+            line_weight=0.22,
+            grad_orient_weight=0.18,
             flow_tv_weight=0.0,
             flow_mag_weight=0.0,
             flow_curv_weight=0.0,
@@ -145,6 +160,11 @@ def config_for_stage(stage: str) -> CompositeLossConfig:
     if s == "stage2_hybrid":
         return CompositeLossConfig(
             stage=s,
+            pixel_weight=0.05,
+            ssim_weight=0.15,
+            edge_weight=0.40,
+            line_weight=0.22,
+            grad_orient_weight=0.18,
             flow_tv_weight=0.05,
             flow_mag_weight=0.02,
             flow_curv_weight=0.01,
@@ -153,12 +173,14 @@ def config_for_stage(stage: str) -> CompositeLossConfig:
     if s == "stage3_finetune":
         return CompositeLossConfig(
             stage=s,
-            pixel_weight=0.08,
-            edge_weight=0.45,
-            grad_orient_weight=0.20,
+            pixel_weight=0.05,
+            ssim_weight=0.15,
+            edge_weight=0.40,
+            line_weight=0.22,
+            grad_orient_weight=0.18,
             flow_tv_weight=0.05,
             flow_mag_weight=0.02,
             flow_curv_weight=0.01,
-            jacobian_weight=0.01,
+            jacobian_weight=0.02,
         )
     raise ValueError(f"Unsupported stage: {stage}")

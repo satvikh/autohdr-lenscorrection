@@ -101,3 +101,7 @@ def test_build_train_val_loaders_respects_env_contract(tmp_path: Path, monkeypat
         assert batch["target_image"].ndim == 4
         assert tuple(batch["input_image"].shape[-2:]) == (24, 36)
         assert tuple(batch["target_image"].shape[-2:]) == (24, 36)
+
+    assert "input_path" not in train_batch
+    assert "target_path" not in train_batch
+    assert {"input_path", "target_path"}.issubset(set(val_batch.keys()))
