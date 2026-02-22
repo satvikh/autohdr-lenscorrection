@@ -300,6 +300,46 @@ def test_stage2_residual_head_receives_nonzero_gradients() -> None:
     assert out.diagnostics.get("grad_norm_residual_head", 0.0) > 0.0
 
 
+def test_amp_enabled_path_uses_fp32_for_warp_and_loss() -> None:
+    class DTypeSpyBackend(MockWarpBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.image_dtype: torch.dtype | None = None
+            self.params_dtype: torch.dtype | None = None
+            self.residual_dtype: torch.dtype | None = None
+
+        def warp(self, image: torch.Tensor, params: torch.Tensor, residual_flow_lowres: torch.Tensor | None):
+            self.image_dtype = image.dtype
+            self.params_dtype = params.dtype
+            self.residual_dtype = residual_flow_lowres.dtype if residual_flow_lowres is not None else None
+            return super().warp(image, params, residual_flow_lowres)
+
+    model = HybridLensCorrectionModel(config=HybridModelConfig(backbone_name="tiny"))
+    loss_fn = CompositeLoss(config_for_stage("stage1_param_only"))
+    stage = get_stage_toggles("stage1_param_only")
+    backend = DTypeSpyBackend()
+    optimizer = create_optimizer(model, OptimConfig(lr=1e-3, weight_decay=0.0))
+
+    out = run_train_step(
+        model=model,
+        batch=_dummy_batch(),
+        loss_fn=loss_fn,
+        warp_backend=backend,
+        stage=stage,
+        optimizer=optimizer,
+        scaler=None,
+        amp_enabled=True,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        debug_instrumentation=True,
+    )
+
+    assert backend.image_dtype == torch.float32
+    assert backend.params_dtype == torch.float32
+    assert out.pred_image.dtype == torch.float32
+    assert out.components["total"].dtype == torch.float32
+
+
 def test_batch_scheduler_skips_step_when_optimizer_step_skipped(tmp_path: Path, monkeypatch) -> None:
     class CounterScheduler:
         def __init__(self) -> None:

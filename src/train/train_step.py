@@ -286,6 +286,22 @@ def _extract_warp_diagnostics(warp_outputs: dict[str, Any]) -> dict[str, float]:
     return diag
 
 
+def _extract_image_range_diagnostics(
+    *,
+    input_image: Tensor,
+    target_image: Tensor,
+    pred_image: Tensor,
+) -> dict[str, float]:
+    return {
+        "input_min": _tensor_scalar(input_image.amin()),
+        "input_max": _tensor_scalar(input_image.amax()),
+        "target_min": _tensor_scalar(target_image.amin()),
+        "target_max": _tensor_scalar(target_image.amax()),
+        "pred_min": _tensor_scalar(pred_image.amin()),
+        "pred_max": _tensor_scalar(pred_image.amax()),
+    }
+
+
 def _validate_model_outputs(raw_outputs: dict[str, Any], batch_size: int) -> None:
     if "params" not in raw_outputs:
         raise ValueError("model output must include key 'params'")
@@ -335,64 +351,84 @@ def forward_loss_step(
 
     batch_size = int(input_image.shape[0])
 
+    # Keep model forward under autocast for throughput, but run warp/loss in FP32 for numeric stability.
+    # This avoids persistent GradScaler step skips caused by half-precision geometry/loss paths.
     with autocast_context(enabled=amp_enabled, device=device):
         raw_outputs = model(input_image)
-        if not isinstance(raw_outputs, dict):
-            raise ValueError("model forward must return dict-like outputs")
+    if not isinstance(raw_outputs, dict):
+        raise ValueError("model forward must return dict-like outputs")
 
-        _validate_model_outputs(raw_outputs, batch_size=batch_size)
+    _validate_model_outputs(raw_outputs, batch_size=batch_size)
 
-        params = raw_outputs["params"]
-        residual_lowres = raw_outputs.get("residual_flow_lowres")
-        if residual_lowres is None:
-            residual_lowres = raw_outputs.get("residual_flow")
+    params = raw_outputs["params"]
+    residual_lowres = raw_outputs.get("residual_flow_lowres")
+    if residual_lowres is None:
+        residual_lowres = raw_outputs.get("residual_flow")
 
-        if torch.is_tensor(residual_lowres):
-            _validate_residual_layout(residual_lowres)
+    if torch.is_tensor(residual_lowres):
+        _validate_residual_layout(residual_lowres)
 
-        use_residual = stage.use_residual and torch.is_tensor(residual_lowres)
-        residual_for_warp = residual_lowres if use_residual else None
+    use_residual = stage.use_residual and torch.is_tensor(residual_lowres)
+    residual_for_warp = residual_lowres if use_residual else None
 
-        warp_outputs = warp_backend.warp(input_image, params, residual_for_warp)
-        if "pred_image" not in warp_outputs:
-            raise ValueError("warp backend output must include key 'pred_image'")
-        if "warp_stats" not in warp_outputs or not isinstance(warp_outputs["warp_stats"], dict):
-            raise ValueError("warp backend output must include dict key 'warp_stats'")
+    if amp_enabled:
+        input_for_warp = input_image.float()
+        target_for_loss = target_image.float()
+        params_for_warp = params.float()
+        residual_for_warp = residual_for_warp.float() if torch.is_tensor(residual_for_warp) else None
+    else:
+        input_for_warp = input_image
+        target_for_loss = target_image
+        params_for_warp = params
 
-        pred_image = warp_outputs["pred_image"]
-        if not torch.is_tensor(pred_image):
-            raise ValueError("warp backend 'pred_image' must be a Tensor")
-        if pred_image.shape != target_image.shape:
-            raise ValueError(
-                f"pred_image and target_image must have identical shape, got {tuple(pred_image.shape)} vs {tuple(target_image.shape)}"
-            )
+    warp_outputs = warp_backend.warp(input_for_warp, params_for_warp, residual_for_warp)
+    if "pred_image" not in warp_outputs:
+        raise ValueError("warp backend output must include key 'pred_image'")
+    if "warp_stats" not in warp_outputs or not isinstance(warp_outputs["warp_stats"], dict):
+        raise ValueError("warp backend output must include dict key 'warp_stats'")
 
-        final_grid = warp_outputs.get("final_grid") if stage.use_jacobian_penalty else None
-        if stage.use_jacobian_penalty and final_grid is None:
-            raise ValueError("stage requires Jacobian penalty but warp backend did not return 'final_grid'")
-        residual_for_loss = residual_for_warp if stage.use_flow_regularizers else None
+    pred_image = warp_outputs["pred_image"]
+    if not torch.is_tensor(pred_image):
+        raise ValueError("warp backend 'pred_image' must be a Tensor")
+    if pred_image.shape != target_image.shape:
+        raise ValueError(
+            f"pred_image and target_image must have identical shape, got {tuple(pred_image.shape)} vs {tuple(target_image.shape)}"
+        )
 
-        try:
-            total_loss, components = loss_fn(
-                pred_image,
-                target_image,
-                residual_flow_lowres=residual_for_loss,
-                final_grid_bhwc=final_grid,
-            )
-        except RuntimeError as exc:
-            if "non-finite" in str(exc).lower() or "nan" in str(exc).lower() or "inf" in str(exc).lower():
-                raise FloatingPointError(f"Non-finite loss computation detected: {exc}") from exc
-            raise
+    final_grid = warp_outputs.get("final_grid") if stage.use_jacobian_penalty else None
+    if stage.use_jacobian_penalty and final_grid is None:
+        raise ValueError("stage requires Jacobian penalty but warp backend did not return 'final_grid'")
+    residual_for_loss = residual_for_warp if stage.use_flow_regularizers else None
+
+    try:
+        total_loss, components = loss_fn(
+            pred_image,
+            target_for_loss,
+            residual_flow_lowres=residual_for_loss,
+            final_grid_bhwc=final_grid,
+        )
+    except RuntimeError as exc:
+        if "non-finite" in str(exc).lower() or "nan" in str(exc).lower() or "inf" in str(exc).lower():
+            raise FloatingPointError(f"Non-finite loss computation detected: {exc}") from exc
+        raise
 
     diagnostics = {}
     diagnostics.update(_extract_model_diagnostics(raw_outputs, model))
     diagnostics.update(_extract_warp_diagnostics(warp_outputs))
+    diagnostics.update(
+        _extract_image_range_diagnostics(
+            input_image=input_for_warp,
+            target_image=target_for_loss,
+            pred_image=pred_image,
+        )
+    )
 
     if not torch.isfinite(total_loss):
         raise FloatingPointError("Non-finite total loss detected (NaN/Inf).")
     for name, value in components.items():
         if not torch.isfinite(value):
             raise FloatingPointError(f"Non-finite loss component detected: {name}")
+        diagnostics[f"loss_finite_{name}"] = 1.0
 
     return TrainStepResult(
         total_loss=total_loss,
@@ -465,6 +501,9 @@ def run_train_step(
 
         new_scale = float(scaler.get_scale())
         optim_step_skipped = new_scale < prev_scale
+        step_out.diagnostics["amp_scale_before"] = prev_scale
+        step_out.diagnostics["amp_scale_after"] = new_scale
+        step_out.diagnostics["amp_scale_ratio"] = (new_scale / prev_scale) if prev_scale > 0.0 else 1.0
     else:
         step_out.total_loss.backward()
         if grad_clip_norm is not None:

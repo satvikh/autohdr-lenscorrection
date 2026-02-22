@@ -23,4 +23,10 @@ def build_grad_scaler(*, enabled: bool, device: torch.device) -> torch.amp.GradS
     """Create GradScaler when AMP is enabled on CUDA."""
     if not enabled or device.type != "cuda":
         return None
-    return torch.amp.GradScaler("cuda")
+    return torch.amp.GradScaler(
+        "cuda",
+        init_scale=16384.0,
+        growth_factor=2.0,
+        backoff_factor=0.5,
+        growth_interval=2000,
+    )
