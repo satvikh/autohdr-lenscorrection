@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "stage3_finetune",
+  "checkpoint_path": "outputs/runs/stage3_finetune/best.pt",
+  "config_hash": "none",
+  "fallback_counts": {},
+  "input_dir": "/workspace/data/automatic-lens-correction/test-originals",
+  "mode_counts": {
+    "hybrid": 1000
+  },
+  "model_source": "checkpoint",
+  "output_dir": "/workspace/outputs/preds/stage3_finetune_test",
+  "processed": 1000,
+  "residual_metrics_avg": {
+    "residual_dx_abs_max_norm": 0.0018483578668674454,
+    "residual_dx_abs_mean_norm": 0.00048219714156584815,
+    "residual_dy_abs_max_norm": 0.0038278104146011174,
+    "residual_dy_abs_mean_norm": 0.0005377441944438032
+  },
+  "safety_reason_counts": {},
+  "timestamp_utc": "2026-02-24T06:23:22.929783+00:00",
+  "unsafe_trigger_count": 0
+}

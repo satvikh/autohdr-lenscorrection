@@ -1,0 +1,19 @@
+backbone_name: resnet34
+pretrained_backbone: false
+use_coord_channels: true
+include_aspect: false
+param_hidden_dim: 256
+residual_hidden_dim: 128
+residual_max_disp: 6.0
+return_pred_image: false
+
+param_bounds:
+  k1: [-0.6, 0.6]
+  k2: [-0.3, 0.3]
+  k3: [-0.15, 0.15]
+  p1: [-0.03, 0.03]
+  p2: [-0.03, 0.03]
+  dcx: [-0.08, 0.08]
+  dcy: [-0.08, 0.08]
+  scale: [0.90, 1.20]
+  aspect: [0.97, 1.03]

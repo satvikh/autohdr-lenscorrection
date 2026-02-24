@@ -1,0 +1,82 @@
+run_name: cloud_h100_stage2
+stage: stage2_hybrid
+warp_backend: person1
+synthetic_train_steps: 32
+synthetic_val_steps: 8
+synthetic_batch_size: 2
+synthetic_height: 256
+synthetic_width: 256
+device: cuda
+epochs: 8
+max_steps_per_epoch: null
+max_val_steps: null
+log_interval: 25
+amp_enabled: false
+grad_clip_norm: 0.5
+checkpoint_dir: outputs/runs
+proxy_enabled: true
+proxy_module_path: src.metrics.proxy_score
+proxy_function_name: compute_proxy_score
+proxy_fullres_slice_enabled: true
+proxy_fullres_max_images: 128
+proxy_config:
+  weights:
+    edge: 0.4
+    line: 0.22
+    grad: 0.18
+    ssim: 0.15
+    mae: 0.05
+  metrics:
+    edge: true
+    line: true
+    grad: true
+    ssim: true
+    mae: true
+  edge_scales:
+  - 1.0
+  - 0.5
+  line_scales:
+  - 1.0
+  - 0.5
+  grad_scales:
+  - 1.0
+  - 0.5
+  line_use_lsd: false
+  image:
+    require_same_size: true
+  aggregation:
+    fail_policy: score_zero
+  hardfail:
+    regional_max: 0.45
+    regional_window: 64
+    edge_min: 0.03
+    penalty_mode: score_zero
+    penalty_value: 0.0
+best_metric_name: proxy_fullres_slice_total_score
+best_metric_mode: max
+debug_dump_dir: outputs/debug/cloud_h100_stage2
+debug_dump_max_images: 16
+debug_instrumentation: true
+debug_metric_precision: 10
+debug_log_sample_ids: true
+debug_param_update_interval: 25
+debug_perf_enabled: true
+debug_perf_interval: 25
+debug_probe_enabled: true
+debug_probe_max_samples: 16
+debug_residual_inactive_threshold_px: 1.0e-06
+debug_residual_inactive_patience: 16
+debug_zero_grad_threshold: 1.0e-10
+debug_zero_param_delta_threshold: 1.0e-10
+fail_on_nonfinite_loss: true
+param_saturation_warn_threshold: 0.6
+residual_warn_abs_max_px: 30.0
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0001
+  betas:
+  - 0.9
+  - 0.999
+scheduler:
+  name: cosine
+  min_lr: 1.0e-06
