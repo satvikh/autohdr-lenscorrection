@@ -35,3 +35,5 @@ cloud_h100_stage3_submission
 
 stage3_finetune_test_submission
 
+autohdr_weights
+*.pt
